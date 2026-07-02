@@ -1,11 +1,13 @@
 @echo off
 cd /d "%~dp0"
 echo =============================================
-echo  Unity SimpleMCPBridge - E2E Test
+echo  SimpleMcpServer - E2E Test
 echo =============================================
 echo.
-echo Make sure Unity SimpleMCPBridge is running on port %UNITY_MCP_PORT%.
+echo Make sure SimpleMcpServer and Unity Bridge are running.
 echo.
-node tests/test-bridge.mjs
+echo Running MCP tools/list test...
+echo.
+node tests\test-e2e.cjs
 echo.
 pause

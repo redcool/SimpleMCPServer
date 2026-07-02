@@ -1,32 +1,33 @@
 # SimpleMcpServer
 
-让 AI 代理（Claude Code、Cursor 等）通过 MCP 协议直接操作 Unity 场景。
+让 AI 代理（Claude Code、OpenCode 等）通过 MCP 协议直接操作 Unity 场景。  
+**必须配合 [SimpleMCPBridge](https://github.com/redcool/SimpleMCPBridge_Unity)（Unity 侧桥接包）使用。**
 
 ## 架构
 
 ```
-AI Agent (Claude Code / Cursor)
+AI Agent (Claude Code / OpenCode)
     │  MCP (stdio)
     ▼
-MCP Server (Node.js/TypeScript)   ← 本仓库
-    │  WebSocket (JSON-RPC)
+SimpleMcpServer (Node.js/TypeScript)   ← 本仓库
+    │  WebSocket
     ▼
-Unity Bridge (C#)                 → SimpleMCPBridge/Assets/
+SimpleMCPBridge (C#)                   ← 另一个仓库，需单独 clone 到 Unity Assets/
     │
     ▼
 Unity Editor / Runtime
 ```
 
-- **MCP Server** — 处理 MCP 协议，注册工具，转发请求到 Unity
-- **Unity Bridge** — 在 Unity 内运行的 WebSocket 服务器，执行场景操作
+- **SimpleMcpServer**（本仓库）— 处理 MCP 协议，注册工具，转发请求到 Unity
+- **SimpleMCPBridge**（[companion repo](https://github.com/redcool/SimpleMCPBridge_Unity)）— 在 Unity 内运行的 WebSocket 客户端，执行场景操作
 
 ## 前置条件
 
-- **Node.js 22+** — 内置 WebSocket 支持，无需 `ws` 库
+- **Node.js 22+**
 - **Unity 2022.3+** — 项目已安装 SimpleMCPBridge 包
 - **npm** — 随 Node.js 一起安装
 
-验证 Node.js 已安装：
+验证 Node.js：
 
 ```bash
 node --version   # 应输出 v22.x.x 或更高
@@ -35,11 +36,11 @@ npm --version    # 应输出 10.x.x 或更高
 
 ## 安装与设置
 
-### 方式一：自动安装（推荐）
+### 自动安装（推荐）
 
-双击运行 `setup.bat`，它会自动检查环境并安装依赖。
+双击 `setup.bat`。
 
-### 方式二：手动安装
+### 手动安装
 
 ```bash
 cd SimpleMcpServer
@@ -49,36 +50,46 @@ npm run build
 
 ## 使用
 
+### 前置：clone 并配置 SimpleMCPBridge
+
+```bash
+cd YourUnityProject/Assets/
+git clone https://github.com/redcool/SimpleMCPBridge_Unity.git
+```
+
+编辑 `Assets/SimpleMCPBridge/bridge-config.json`：
+
+```json
+{ "serverIp": "127.0.0.1", "serverPort": 45678 }
+```
+
 ### 1. 启动 Unity Bridge
 
 1. 用 Unity 打开项目
 2. 菜单栏 → **Tools → SimpleMCPBridge**
-3. 点击 **Start Bridge**（默认端口 45678）
+3. 点击 **Connect to Server**
 
-或在 Unity 启动时自动启动（已配置 `Assets/SimpleMCPBridge/Editor/AutoStartBridge.cs`）。
+或让 Unity 启动时自动连接（`AutoStartBridge.cs` 通过 `bridge-config.json` 自动连接）。
 
 ### 2. 启动 MCP Server
 
 ```bash
-# 编译 + 启动（双击 start.bat）
+# 编译 + 启动
 start.bat
 
-# 或跳过编译直接启动（代码未改时）
+# 跳过编译（代码未改时）
 start-quick.bat
 ```
 
-服务器连接到 Unity 后输出：
+连接成功输出：
 
 ```
-[MCP-Server] Connected to Unity!
-[MCP-Server] Ready. Agent can now use Unity tools via MCP.
+[Server] Bridge connected
+[Server] Registered 6 tool(s) from bridge [ID: xxxx]
+[Server] Ready (ws://127.0.0.1:45678)
 ```
 
 ### 3. 配置 AI 代理
-
-#### Claude Code
-
-在项目根目录的 `claude.json` 或 `CLAUDE.md` 中添加：
 
 ```json
 {
@@ -91,84 +102,73 @@ start-quick.bat
 }
 ```
 
-#### Cursor
-
-在 Settings → MCP 中添加：
-
-```
-名称: Unity
-类型: command
-命令: node path/to/SimpleMcpServer/dist/index.js
-```
-
 ### 4. 验证连通性
 
-```bat
-# 双击 start-test.bat
-start-test.bat
+```bash
+node tests/test-e2e.cjs
 ```
 
-预期输出：全部 6 项测试通过。
+预期输出：`*** TEST PASSED ***`
 
 ## 可用工具
 
 | 工具 | 说明 |
 |------|------|
-| `scene.get_hierarchy` | 获取场景层级树（根对象 → 子对象） |
-| `scene.get_objects` | 获取所有对象，可选按名称过滤 |
-| `scene.create_object` | 创建 GameObject，可设位置/旋转/缩放 |
-| `scene.delete_object` | 按 instanceId 删除对象 |
-| `scene.set_transform` | 修改对象的位置/旋转/缩放 |
-| `scene.set_component_property` | 修改组件属性（支持 Vector3、Color 等类型） |
+| `scene.get_hierarchy` | 获取场景层级树 |
+| `scene.get_objects` | 按名称过滤查找对象 |
+| `scene.create_object` | 创建 GameObject |
+| `scene.delete_object` | 按 instanceId 删除 |
+| `scene.set_transform` | 修改位置/旋转/缩放 |
+| `scene.set_component_property` | 修改组件属性 |
 
 ## 配置
 
-通过环境变量 `UNITY_MCP_PORT` 修改端口（默认 45678）：
+编辑 `config.json`：
 
-```bash
-set UNITY_MCP_PORT=45679 && node dist/index.js
+```json
+{ "ip": "127.0.0.1", "port": 45678 }
 ```
+
+本地开发用 `127.0.0.1`，云端部署用 `0.0.0.0`。
 
 ## 开发
 
 ```bash
-# 监听模式开发
-npm run dev       # 使用 tsx 直接运行 TS
-
-# 测试
-start-test.bat    # 或 node tests/test-bridge.mjs
+npm run dev           # tsx 监听模式
+node tests/test-e2e.cjs  # E2E 测试
 
 # 目录结构
-src/              # TypeScript 源码
-├── index.ts          # 入口
-├── unity-bridge.ts   # WebSocket 客户端
-├── types.ts          # 类型定义
-└── tools/
-    └── scene-tools.ts  # 工具注册
-tests/              # 测试代码
-├── test-bridge.mjs    # 主 E2E 测试
-├── test-simple.mjs    # 连通性测试
-└── diff-test.mjs      # 诊断工具
+src/
+├── index.ts           # 入口 + WS Server + MCP handlers
+└── types.ts           # 类型定义
+tests/
+└── test-e2e.cjs       # E2E 测试
 ```
 
 ## 故障排查
 
-**"Failed to connect to Unity"**
-→ Unity 没打开，或 SimpleMCPBridge 没启动
-→ 确保 Unity 菜单栏 Tools → SimpleMCPBridge → Start
+**"WebSocket server error: listen EADDRINUSE"**
+→ 端口被占用，杀掉残留进程：
+```powershell
+Get-Process -Name "node" | Stop-Process -Force
+```
 
-**"Connection refused"**
-→ 端口被占用，或 Unity 桥接器未运行
-→ 重启 Unity Bridge（Stop → Start）
-→ 或修改端口：`set UNITY_MCP_PORT=45679`
+**"Unity not connected"**
+→ Unity 没打开，或 SimpleMCPBridge 没启动
 
 **测试超时**
-→ Unity Bridge 在 Edit Mode 下未处理消息
-→ 确保 `AutoStartBridge.cs` 已生效（检查 Console 日志）
+→ E2E 测试会启动自己的 Server 实例，Bridge 需要通过重试循环重连到新 Server
+
+## 相关仓库
+
+| 仓库 | 说明 |
+|------|------|
+| [SimpleMcpServer](https://github.com/redcool/SimpleMCPServer) | 本仓库 — MCP Server，Node.js 端 |
+| [SimpleMCPBridge](https://github.com/redcool/SimpleMCPBridge_Unity) | Unity 桥接包，clone 到 Unity 项目的 `Assets/` 下 |
 
 ## 技术说明
 
+- MCP SDK v1.x 低阶 API（`setRequestHandler`），不用 `registerTool()`（该 API 在 `connect()` 后抛出异常）
+- WebSocket 通信（`ws` 库），IP/Port 来自 `config.json`
+- 工具通过 `register_tools` 消息从 Bridge 动态注册到 Server，Bridge 重连后自动重新注册
 - Unity Bridge 使用纯 TCP 实现 RFC 6455 WebSocket，零外部依赖
-- MCP Server 使用 `@modelcontextprotocol/sdk` v1.x 与 `StdioServerTransport`
-- 消息队列在主线程上处理（`EditorApplication.update`），保证 Unity API 安全
-- 日志输出到 Unity 项目根目录的 `Logs/mcp_bridge_debug.log`
