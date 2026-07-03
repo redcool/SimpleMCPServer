@@ -64,3 +64,21 @@ export interface SetComponentPropertyParams {
 export interface DeleteObjectParams {
   instanceId: number;
 }
+
+/** AI request sent from Bridge to Server. */
+export interface AIRequest {
+  type: 'ai_request';
+  requestId?: string;
+  prompt: string;
+  context?: Record<string, unknown>;
+  system?: string;
+  messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+}
+
+/** AI response sent from Server to Bridge. */
+export interface AIResponse {
+  type: 'ai_response';
+  requestId: string;
+  text: string | null;
+  error: string | null;
+}

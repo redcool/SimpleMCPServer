@@ -1,4 +1,13 @@
 {
-  "ip": "127.0.0.1",
-  "port": 45678
+    "ip": "127.0.0.1",
+    "port": 45678,
+    "llm": {
+        "enabled": false,
+        "provider": "openai",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "",
+        "model": "gpt-4o",
+        "temperature": 0.7,
+        "maxTokens": 1024
+    }
 }
