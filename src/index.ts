@@ -36,6 +36,12 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 
+// ── Patch console.error with ISO timestamps ──
+const origError = console.error.bind(console);
+console.error = (...args: any[]) => {
+  origError(`[${new Date().toISOString()}]`, ...args);
+};
+
 // ── Config ──
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
