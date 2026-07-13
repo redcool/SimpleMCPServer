@@ -36,10 +36,16 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 
-// ── Patch console.error with ISO timestamps ──
+// ── Patch console.error with Beijing time (UTC+8) timestamps ──
 const origError = console.error.bind(console);
 console.error = (...args: any[]) => {
-  origError(`[${new Date().toISOString()}]`, ...args);
+  const beijing = new Date().toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  origError(`[${beijing}]`, ...args);
 };
 
 // ── Config ──
