@@ -48,6 +48,8 @@ console.error = (...args: any[]) => {
   origError(`[${beijing}]`, ...args);
 };
 
+const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+
 // ── Config ──
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +69,13 @@ interface AppConfig {
   ip: string;
   port: number;
   llm: LLMConfig;
+}
+
+let appConfigCache: AppConfig | null = null;
+
+function getCachedConfig(): AppConfig {
+  if (!appConfigCache) appConfigCache = loadAppConfig();
+  return appConfigCache;
 }
 
 function loadAppConfig(): AppConfig {
@@ -89,6 +98,20 @@ function loadAppConfig(): AppConfig {
   } catch {
     return defaults;
   }
+}
+
+function getMergedTools(): Array<{ name: string; description: string; inputSchema: { type: string } }> {
+  const seen = new Set<string>();
+  const merged: Array<{ name: string; description: string; inputSchema: { type: string } }> = [];
+  for (const [_id, info] of [...bridges.entries()].reverse()) {
+    for (const tool of info.tools) {
+      if (!seen.has(tool.name)) {
+        seen.add(tool.name);
+        merged.push({ ...tool, inputSchema: { type: 'object' } });
+      }
+    }
+  }
+  return merged;
 }
 
 // ── Multi-Bridge State ──
@@ -177,7 +200,13 @@ function callBridge(method: string, params: Record<string, unknown>): Promise<st
       reject(new Error(`Tool call '${method}' timed out`));
     }, 30_000);
     pending.set(id, { resolve, reject, timer, method, params });
-    info.ws.send(message);
+    info.ws.send(message, (err) => {
+      if (err) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(new Error(`WebSocket send failed: ${err.message}`));
+      }
+    });
   });
 }
 
@@ -214,11 +243,12 @@ function buildLLMMessages(req: AIRequestMessage): Array<{ role: 'system' | 'user
 }
 
 function callLLM(req: AIRequestMessage): Promise<string> {
-  const serverCfg = loadAppConfig();
+  const serverCfg = getCachedConfig();
   const llmCfg = serverCfg.llm;
 
-  if (!llmCfg.apiKey) {
-    return Promise.reject(new Error('LLM API key not configured. Set llm.apiKey in config.json'));
+  const apiKey = process.env.LLM_API_KEY || llmCfg.apiKey;
+  if (!apiKey) {
+    return Promise.reject(new Error('LLM API key not configured. Set LLM_API_KEY env var or llm.apiKey in config.json'));
   }
 
   const messages = buildLLMMessages(req);
@@ -252,7 +282,7 @@ function callLLM(req: AIRequestMessage): Promise<string> {
   };
 
   if (!isOllama) {
-    headers['Authorization'] = `Bearer ${llmCfg.apiKey}`;
+    headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
   return new Promise<string>((resolve, reject) => {
@@ -313,7 +343,8 @@ function callLLM(req: AIRequestMessage): Promise<string> {
 // ── Main ──
 
 async function main(): Promise<void> {
-  const appCfg = loadAppConfig();
+  appConfigCache = loadAppConfig();
+  const appCfg = appConfigCache;
 
   // ── MCP Server (protocol handlers: tools/list, tools/call) ──
   const server = new Server(
@@ -323,21 +354,7 @@ async function main(): Promise<void> {
 
   // ── Tool listing: merge all bridges' tools (dedup by name, last-wins) ──
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const seen = new Set<string>();
-    const merged: Array<{ name: string; description: string }> = [];
-    // Iterate in reverse insertion order so later bridges' tools win for same-named entries
-    const entries = [...bridges.entries()].reverse();
-    for (const [_id, info] of entries) {
-      for (const tool of info.tools) {
-        if (!seen.has(tool.name)) {
-          seen.add(tool.name);
-          merged.push(tool);
-        }
-      }
-    }
-    return {
-      tools: merged.map(t => ({ ...t, inputSchema: { type: 'object' as const } })),
-    };
+    return { tools: getMergedTools() };
   });
 
   // ── Tool call: route to the bridge that registered the tool ──
@@ -377,6 +394,12 @@ async function main(): Promise<void> {
 
   // ── WebSocket — Bridge/Game connections ──
   const wss = new WebSocketServer({ server: httpServer });
+
+  const pingInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) ws.ping();
+    });
+  }, 30_000);
 
   wss.on('connection', (ws: WebSocket) => {
     // NOTE: We do NOT close existing bridges here.
@@ -457,7 +480,7 @@ async function main(): Promise<void> {
         const requestId = msg.requestId || `ai_${Date.now()}`;
         console.error(`[Server] AI request: ${requestId}, prompt: ${String(msg.prompt || '').slice(0, 80)}`);
 
-        const llmCfg = loadAppConfig().llm;
+        const llmCfg = getCachedConfig().llm;
         if (!llmCfg.apiKey) {
           ws.send(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'LLM not configured on server' }));
           return;
@@ -634,7 +657,13 @@ async function main(): Promise<void> {
       }
 
       let body = '';
-      req.on('data', (chunk: Buffer) => { body += chunk; });
+      req.on('data', (chunk: Buffer) => {
+        body += chunk;
+        if (body.length > MAX_BODY_SIZE) {
+          req.destroy(new Error('Request body too large'));
+          return;
+        }
+      });
       req.on('end', async () => {
         try {
           const parsedBody = body ? JSON.parse(body) : undefined;
@@ -659,7 +688,13 @@ async function main(): Promise<void> {
       }, 10_000);
 
       let body = '';
-      req.on('data', (chunk: Buffer) => { body += chunk; });
+      req.on('data', (chunk: Buffer) => {
+        body += chunk;
+        if (body.length > MAX_BODY_SIZE) {
+          req.destroy(new Error('Request body too large'));
+          return;
+        }
+      });
       req.on('end', async () => {
         clearTimeout(rpcTimeout);
         try {
@@ -739,24 +774,10 @@ async function main(): Promise<void> {
     }
 
     if (msg.method === 'tools/list') {
-      // Merge all bridges' tools (same logic as ListToolsRequestSchema)
-      const seen = new Set<string>();
-      const merged: Array<{ name: string; description: string }> = [];
-      const entries = [...bridges.entries()].reverse();
-      for (const [_id, info] of entries) {
-        for (const tool of info.tools) {
-          if (!seen.has(tool.name)) {
-            seen.add(tool.name);
-            merged.push(tool);
-          }
-        }
-      }
       return {
         jsonrpc: '2.0',
         id: msg.id,
-        result: {
-          tools: merged.map(t => ({ ...t, inputSchema: { type: 'object' } })),
-        },
+        result: { tools: getMergedTools() },
       };
     }
 
@@ -811,6 +832,7 @@ async function main(): Promise<void> {
   // ── Cleanup ──
   const cleanup = (): void => {
     console.error('[Server] Shutting down...');
+    clearInterval(pingInterval);
     wss.close();
     for (const [_id, info] of bridges) {
       info.ws.close();
