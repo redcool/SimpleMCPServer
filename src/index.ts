@@ -36,17 +36,42 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 
-// ── Patch console.error with Beijing time (UTC+8) timestamps ──
-const origError = console.error.bind(console);
-console.error = (...args: any[]) => {
+// ── Logging utility ──
+// All server log output goes through this function.
+// It writes to BOTH the console (via stderr, which the cmd window shows)
+// AND the server.log file (for persistence).
+// Format: [Beijing-time] [TAG] message
+// Change this single function to redirect logs or add log levels.
+import { appendFileSync } from 'fs';
+
+const _consoleError = console.error.bind(console);
+
+function log(message: string, ...extra: any[]) {
   const beijing = new Date().toLocaleString('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false,
   });
-  origError(`[${beijing}]`, ...args);
-};
+  const tagMatch = message.match(/^\[(\w+)\]\s*/);
+  let formatted: string;
+  if (tagMatch) {
+    const tag = tagMatch[1];
+    const cleanMsg = message.slice(tagMatch[0].length);
+    formatted = `[${beijing}] [${tag}] ${cleanMsg}`;
+    _consoleError(formatted, ...extra);
+  } else {
+    formatted = `[${beijing}] ${message}`;
+    _consoleError(formatted, ...extra);
+  }
+
+  // Also append to server.log (flush immediately)
+  try {
+    const extraStr = extra.length > 0 ? ' ' + extra.map(e => String(e)).join(' ') : '';
+    const logFile = join(__dirname, '..', 'server.log');
+    appendFileSync(logFile, formatted + extraStr + '\n', 'utf-8');
+  } catch { /* best-effort */ }
+}
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
@@ -401,25 +426,29 @@ async function main(): Promise<void> {
     });
   }, 30_000);
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+    // Log client IP and port — keep reference for disconnect/error logs
+    const clientIp = req.socket.remoteAddress || 'unknown';
+    const clientPort = req.socket.remotePort || 0;
+    log(`[Server] New bridge connection from ${clientIp}:${clientPort} (${bridges.size} existing bridge(s))`);
+
     // NOTE: We do NOT close existing bridges here.
     // Multiple bridges can coexist — each identifies itself via bridgeId in register_tools.
     // This is essential for domain reload: old bridge disconnects → new bridge
     // is already connected, so tool calls are never dropped during the transition.
     let bridgeId: string | null = null;
-    console.error(`[Server] New WebSocket connected (${bridges.size} existing bridge(s))`);
 
     let requestToolsTimer: ReturnType<typeof setTimeout> | null = null;
 
     function requestTools(): void {
       if (ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: 'request_tools' }));
-      console.error('[Server] Sent request_tools to bridge');
+      log('[Server] Sent request_tools to bridge');
       let attempts = 0;
       requestToolsTimer = setTimeout(() => {
         if (attempts < 3 && ws.readyState === WebSocket.OPEN) {
           attempts++;
-          console.error(`[Server] Re-requesting tools (attempt ${attempts + 1})...`);
+          log(`[Server] Re-requesting tools (attempt ${attempts + 1})...`);
           ws.send(JSON.stringify({ type: 'request_tools' }));
         }
       }, 8000);
@@ -431,17 +460,17 @@ async function main(): Promise<void> {
       try {
         msg = JSON.parse(rawStr);
       } catch {
-        console.error('[Server] Invalid JSON from bridge:', rawStr.slice(0, 200));
+        log('[Server] Invalid JSON from bridge:', rawStr.slice(0, 200));
         return;
       }
 
       // Debug: log every incoming message type
       const idStr = String(msg.id ?? '');
       if (msg.type) {
-        console.error(`[Server] Received message type="${msg.type}" from bridge [id=${idStr.slice(0,20) || 'none'}]`);
+        log(`[Server] Received message type="${msg.type}" from bridge [id=${idStr.slice(0,20) || 'none'}]`);
       } else if (msg.id) {
         // Tool response
-        console.error(`[Server] Received tool response id="${idStr.slice(0,24)}"`);
+        log(`[Server] Received tool response id="${idStr.slice(0,24)}"`);
       }
 
       // ── Tool registration (bridge identifies itself) ──
@@ -457,11 +486,11 @@ async function main(): Promise<void> {
         for (const tool of msg.tools) {
           toolToBridge.set(tool.name, id);
         }
-        console.error(`[Server] Registered ${msg.tools.length} tool(s) from bridge [ID: ${id}] (${bridges.size} bridge(s) total)`);
+        log(`[Server] Registered ${msg.tools.length} tool(s) from bridge [ID: ${id.slice(0, 8)} IP: ${clientIp}:${clientPort}] (${bridges.size} bridge(s) total)`);
 
         // Retry queued tool calls now that a bridge is available
         if (retryQueue.length > 0) {
-          console.error(`[Server] Retrying ${retryQueue.length} queued tool calls via bridge [${bridgeId}]...`);
+          log(`[Server] Retrying ${retryQueue.length} queued tool calls via bridge [${bridgeId}]...`);
           if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
           const queue = [...retryQueue];
           retryQueue.length = 0;
@@ -478,7 +507,7 @@ async function main(): Promise<void> {
       // ── AI Request from Bridge ──
       if (msg.type === 'ai_request') {
         const requestId = msg.requestId || `ai_${Date.now()}`;
-        console.error(`[Server] AI request: ${requestId}, prompt: ${String(msg.prompt || '').slice(0, 80)}`);
+        log(`[Server] AI request: ${requestId}, prompt: ${String(msg.prompt || '').slice(0, 80)}`);
 
         const llmCfg = getCachedConfig().llm;
         if (!llmCfg.apiKey) {
@@ -536,14 +565,14 @@ async function main(): Promise<void> {
       // ── Compilation status from bridge ──
       if (msg.type === 'compilation') {
         isUnityCompiling = msg.status === 'started';
-        console.error(`[Server] Unity compilation ${msg.status}`);
+        log(`[Server] Unity compilation ${msg.status}`);
         return;
       }
 
       // ── Play mode state from bridge ──
       if (msg.type === 'playmode') {
         playModeState = msg.status;
-        console.error(`[Server] Unity play mode: ${msg.status}`);
+        log(`[Server] Unity play mode: ${msg.status}`);
         return;
       }
 
@@ -557,7 +586,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      console.error('[Server] Unknown message:', raw.toString().slice(0, 200));
+      log('[Server] Unknown message:', raw.toString().slice(0, 200));
     });
 
     requestTools();
@@ -565,24 +594,37 @@ async function main(): Promise<void> {
     ws.on('close', () => {
       // Remove this bridge from the map
       if (bridgeId && bridges.has(bridgeId)) {
-        console.error(`[Server] Bridge disconnected [ID: ${bridgeId}] (${bridges.size - 1} remaining)`);
-        // Remove this bridge's tools from the routing table
+        log(`[Server] Bridge disconnected  [ID: ${bridgeId.slice(0, 8)} IP: ${clientIp}:${clientPort}] (${bridges.size - 1} remaining)`);
+        // Remove this bridge's tools from the routing table,
+        // and fall back to another bridge that also registered the same tool
         const info = bridges.get(bridgeId)!;
         for (const tool of info.tools) {
           if (toolToBridge.get(tool.name) === bridgeId) {
-            toolToBridge.delete(tool.name);
+            // Check if any other bridge still has this tool
+            let fallback = false;
+            for (const [otherId, otherInfo] of bridges) {
+              if (otherId !== bridgeId && otherInfo.tools.some(t => t.name === tool.name)) {
+                toolToBridge.set(tool.name, otherId);
+                log(`[Server] Fallback routing '${tool.name}' → bridge [${otherId.slice(0, 8)}]`);
+                fallback = true;
+                break;
+              }
+            }
+            if (!fallback) {
+              toolToBridge.delete(tool.name);
+            }
           }
         }
         bridges.delete(bridgeId);
         bridgeId = null;
       } else {
-        console.error(`[Server] Bridge disconnected (${bridges.size} remaining)`);
+        log(`[Server] Bridge disconnected (no bridgeId, IP: ${clientIp}:${clientPort}) (${bridges.size} remaining)`);
       }
 
       // If ALL bridges are gone, move in-flight tool calls to retry queue
       if (bridges.size === 0) {
         if (pending.size > 0) {
-          console.error(`[Server] No bridges remaining — moving ${pending.size} pending tool calls to retry queue`);
+          log(`[Server] No bridges remaining — moving ${pending.size} pending tool calls to retry queue`);
           for (const [_id, entry] of pending) {
             clearTimeout(entry.timer);
             retryQueue.push({
@@ -599,7 +641,7 @@ async function main(): Promise<void> {
         if (retryTimer) clearTimeout(retryTimer);
         retryTimer = setTimeout(() => {
           if (retryQueue.length > 0) {
-            console.error(`[Server] Retry grace period expired — rejecting ${retryQueue.length} pending calls`);
+            log(`[Server] Retry grace period expired — rejecting ${retryQueue.length} pending calls`);
             for (const entry of retryQueue) {
               entry.reject(new Error('All bridges disconnected and none reconnected in time'));
             }
@@ -613,10 +655,10 @@ async function main(): Promise<void> {
       }
     });
 
-    ws.on('error', (err: Error) => console.error('[Server] Bridge error:', err.message));
+    ws.on('error', (err: Error) => log(`[Server] Bridge error [IP: ${clientIp}:${clientPort}]`, err.message));
   });
 
-  wss.on('error', (err: Error) => console.error('[Server] WebSocket error:', err.message));
+  wss.on('error', (err: Error) => log('[Server] WebSocket error:', err.message));
 
   // ── HTTP request routing ──
   httpServer.on('request', async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -626,17 +668,17 @@ async function main(): Promise<void> {
     if (req.method === 'GET' && url.pathname === '/sse') {
       const transport = new SSEServerTransport('/mcp', res);
       sessions.set(transport.sessionId, transport);
-      console.error(`[Server] SSE session started: ${transport.sessionId}`);
+      log(`[Server] SSE session started: ${transport.sessionId}`);
 
       transport.onclose = () => {
         sessions.delete(transport.sessionId);
-        console.error(`[Server] SSE session closed: ${transport.sessionId}`);
+        log(`[Server] SSE session closed: ${transport.sessionId}`);
       };
 
       try {
         await server.connect(transport);
       } catch (err: any) {
-        console.error('[Server] SSE connect error:', err.message);
+        log('[Server] SSE connect error:', err.message);
         if (!res.headersSent) {
           res.writeHead(500);
           res.end('Internal error');
@@ -815,23 +857,23 @@ async function main(): Promise<void> {
 
   // ── Start listening ──
   httpServer.listen(appCfg.port, appCfg.ip, () => {
-    console.error(`[Server] Ready at http://${appCfg.ip}:${appCfg.port}/`);
-    console.error(`[Server] Agent SSE  → GET  /sse  (SSE stream for MCP)`);
-    console.error(`[Server] Agent POST → POST /mcp  (send JSON-RPC messages)`);
-    console.error(`[Server] Scripts    → POST /rpc  (direct JSON-RPC, no SSE needed)`);
-    console.error(`[Server] Health     → GET  /health`);
-    console.error(`[Server] Bridge     → ws://${appCfg.ip}:${appCfg.port}/ (WebSocket)`);
+    log(`[Server] Ready at http://${appCfg.ip}:${appCfg.port}/`);
+    log(`[Server] Agent SSE  → GET  /sse  (SSE stream for MCP)`);
+    log(`[Server] Agent POST → POST /mcp  (send JSON-RPC messages)`);
+    log(`[Server] Scripts    → POST /rpc  (direct JSON-RPC, no SSE needed)`);
+    log(`[Server] Health     → GET  /health`);
+    log(`[Server] Bridge     → ws://${appCfg.ip}:${appCfg.port}/ (WebSocket)`);
     const llmCfg = appCfg.llm;
     if (llmCfg.apiKey) {
-      console.error(`[Server] LLM configured: ${llmCfg.provider} / ${llmCfg.model}`);
+      log(`[Server] LLM configured: ${llmCfg.provider} / ${llmCfg.model}`);
     } else {
-      console.error(`[Server] LLM: not configured (set llm.apiKey in config.json to enable AI features)`);
+      log(`[Server] LLM: not configured (set llm.apiKey in config.json to enable AI features)`);
     }
   });
 
   // ── Cleanup ──
   const cleanup = (): void => {
-    console.error('[Server] Shutting down...');
+    log('[Server] Shutting down...');
     clearInterval(pingInterval);
     wss.close();
     for (const [_id, info] of bridges) {
@@ -845,6 +887,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('[Server] Fatal:', err);
+  log('[Server] Fatal:', err);
   process.exit(1);
 });
