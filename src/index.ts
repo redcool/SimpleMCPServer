@@ -218,6 +218,7 @@ function callBridge(method: string, params: Record<string, unknown>): Promise<st
 
   const id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const message = JSON.stringify({ id, method, paramsJson: JSON.stringify(params) });
+  log(`[Server] Calling tool '${method}' → bridge [${bridgeId.slice(0,8)}] (id=${id.slice(0,28)})`);
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -469,8 +470,10 @@ async function main(): Promise<void> {
       if (msg.type) {
         log(`[Server] Received message type="${msg.type}" from bridge [id=${idStr.slice(0,20) || 'none'}]`);
       } else if (msg.id) {
-        // Tool response
-        log(`[Server] Received tool response id="${idStr.slice(0,24)}"`);
+        // Tool response — look up tool name from pending map
+        const pendingEntry = pending.get(msg.id);
+        const toolLabel = pendingEntry ? ` tool='${pendingEntry.method}'` : '';
+        log(`[Server] Received tool response${toolLabel} id="${idStr.slice(0,24)}"`);
       }
 
       // ── Tool registration (bridge identifies itself) ──
