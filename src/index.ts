@@ -727,7 +727,7 @@ async function main(): Promise<void> {
           res.writeHead(408, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Request timed out' }));
         }
-      }, 10_000);
+      }, 60_000);
 
       let body = '';
       req.on('data', (chunk: Buffer) => {
