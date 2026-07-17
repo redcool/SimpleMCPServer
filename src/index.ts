@@ -18,6 +18,7 @@
  *   Local dev:  { "ip": "127.0.0.1", "port": 45678 }
  *   Cloud:      { "ip": "0.0.0.0",   "port": 45678 }
  *   LLM:        { "provider": "openai", "baseUrl": "...", "apiKey": "...", "model": "gpt-4o" }
+ *   Encryption: set encryptionKey in config.json (same key on Bridge) to enable AES-256-CBC payload encryption
  *
  * Start:   node dist/index.js
  * Test:    curl http://127.0.0.1:45678/health
@@ -25,6 +26,7 @@
 
 import http from 'http';
 import https from 'https';
+import crypto from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
@@ -75,6 +77,15 @@ function log(message: string, ...extra: any[]) {
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
+// ── Growth limits ──
+const MAX_BRIDGES = 50;
+const MAX_PENDING = 10000;
+
+// ── Sanitize API keys in error messages ──
+function sanitizeLLMError(text: string): string {
+  return text.replace(/sk-[A-Za-z0-9]{20,}/g, '[REDACTED]');
+}
+
 // ── Config ──
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -93,6 +104,8 @@ interface LLMConfig {
 interface AppConfig {
   ip: string;
   port: number;
+  evalEnabled: boolean;
+  encryptionKey: string;
   llm: LLMConfig;
 }
 
@@ -107,6 +120,8 @@ function loadAppConfig(): AppConfig {
   const defaults: AppConfig = {
     ip: '127.0.0.1',
     port: 45678,
+    evalEnabled: true,
+    encryptionKey: '',
     llm: {
       enabled: false,
       provider: 'openai',
@@ -120,16 +135,86 @@ function loadAppConfig(): AppConfig {
   if (!existsSync(CONFIG_PATH)) return defaults;
   try {
     return { ...defaults, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) };
-  } catch {
+  } catch (e: any) {
+    log('[Server] Config parse error, using defaults:', e.message);
     return defaults;
   }
 }
 
+// ── Payload encryption (shared-key AES-256-CBC) ──
+// Optional: set encryptionKey in config.json to enable.
+// Bridge must use the same key. Empty key = no encryption (plain ws://).
+
+function getEncryptionKey(): string {
+  return getCachedConfig().encryptionKey || '';
+}
+
+function encryptPayload(text: string): string {
+  const key = getEncryptionKey();
+  if (!key) return text;
+  const keyBytes = crypto.createHash('sha256').update(key).digest();
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
+  const enc = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  const combined = Buffer.concat([iv, enc]);
+  return JSON.stringify({ encrypted: combined.toString('base64') });
+}
+
+function decryptPayload(data: string): string | null {
+  const key = getEncryptionKey();
+  if (!key) return data;
+  try {
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed.encrypted !== 'string') return data;
+    const combined = Buffer.from(parsed.encrypted, 'base64');
+    if (combined.length <= 16) return null;
+    const iv = combined.subarray(0, 16);
+    const ct = combined.subarray(16);
+    const keyBytes = crypto.createHash('sha256').update(key).digest();
+    const decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, iv);
+    const dec = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return dec.toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+// ── Server-side tools (bridge management) ──
+
+const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
+  {
+    name: 'bridge.list',
+    description: 'List all connected bridge clients with IP, port, tools count, and tool names',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'bridge.call',
+    description: 'Direct a tool call to a specific bridge by its bridgeId (use bridge.list to get IDs)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: 'Bridge ID (full GUID from bridge.list)' },
+        method: { type: 'string', description: 'Tool name to call on that bridge' },
+        params: { type: 'object', description: 'Tool parameters (key-value pairs)' },
+      },
+      required: ['target', 'method'],
+    },
+  },
+];
+
 function getMergedTools(): Array<{ name: string; description: string; inputSchema: { type: string } }> {
+  const cfg = getCachedConfig();
   const seen = new Set<string>();
   const merged: Array<{ name: string; description: string; inputSchema: { type: string } }> = [];
+  // Include server-side tools first
+  for (const tool of SERVER_TOOLS) {
+    seen.add(tool.name);
+    merged.push({ ...tool, inputSchema: { type: 'object' } });
+  }
+  // Merge bridge tools (last-registration-wins)
   for (const [_id, info] of [...bridges.entries()].reverse()) {
     for (const tool of info.tools) {
+      if (!cfg.evalEnabled && tool.name === 'editor.eval') continue;
       if (!seen.has(tool.name)) {
         seen.add(tool.name);
         merged.push({ ...tool, inputSchema: { type: 'object' } });
@@ -139,6 +224,45 @@ function getMergedTools(): Array<{ name: string; description: string; inputSchem
   return merged;
 }
 
+/**
+ * Route a tool call directly to a specific bridge by bridgeId.
+ * Unlike callBridge() which looks up by tool name, this bypasses
+ * tool-to-bridge routing and calls the named tool on the target bridge directly.
+ */
+function callBridgeById(bridgeId: string, method: string, params: Record<string, unknown>): Promise<string> {
+  const info = bridges.get(bridgeId);
+  if (!info) {
+    return Promise.reject(new Error(`Bridge '${bridgeId}' not found — use bridge.list to see connected bridges`));
+  }
+  if (info.ws.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error(`Bridge '${bridgeId}' WebSocket is not open (state=${info.ws.readyState})`));
+  }
+
+  const id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const message = JSON.stringify({ id, method, paramsJson: JSON.stringify(params) });
+  log(`[Server] Direct call '${method}' → bridge [${bridgeId.slice(0, 8)}] (id=${id.slice(0, 28)})`);
+
+  return new Promise((resolve, reject) => {
+    if (pending.size >= MAX_PENDING) {
+      return reject(new Error(`Server busy: too many pending tool calls (${MAX_PENDING})`));
+    }
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`Direct tool call '${method}' on bridge '${bridgeId.slice(0, 8)}' timed out (30s)`));
+    }, 30_000);
+    pending.set(id, { resolve, reject, timer, method, params, bridgeId });
+    info.ws.send(encryptPayload(message), (err) => {
+      if (err) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(new Error(`WebSocket send to bridge '${bridgeId.slice(0, 8)}' failed: ${err.message}`));
+      }
+    });
+  });
+}
+
+
+
 // ── Multi-Bridge State ──
 
 /** Information about a connected bridge client. */
@@ -147,6 +271,8 @@ interface BridgeInfo {
   id: string;
   tools: Array<{ name: string; description: string }>;
   connectedAt: number;
+  clientIp: string;
+  clientPort: number;
 }
 
 /**
@@ -166,6 +292,7 @@ const pending = new Map<string, {
   timer: ReturnType<typeof setTimeout>;
   method: string;
   params: Record<string, unknown>;
+  bridgeId: string;
 }>();
 
 /**
@@ -177,6 +304,7 @@ const retryQueue: Array<{
   reject: (err: Error) => void;
   method: string;
   params: Record<string, unknown>;
+  bridgeId: string;
 }> = [];
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 /** Pending AI request responses awaiting LLM reply, keyed by requestId. */
@@ -189,6 +317,24 @@ const pendingAI = new Map<string, {
 let isUnityCompiling = false;
 /** Current Unity play mode state. Bridge reports via {"type":"playmode","status":"entered|exiting|entered_edit|exiting_edit"}. */
 let playModeState: string | null = null;
+
+/**
+ * Reject all pending tool calls that were sent to a specific bridge.
+ * Used when a bridge disconnects — prevents 30s timeout hang.
+ * Returns the number of rejected calls.
+ */
+function rejectPendingForBridge(bridgeId: string, reason: string): number {
+  let count = 0;
+  for (const [reqId, entry] of pending) {
+    if (entry.bridgeId === bridgeId) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error(`Bridge disconnected: ${reason}`));
+      pending.delete(reqId);
+      count++;
+    }
+  }
+  return count;
+}
 
 /**
  * Route a tool call to the bridge that registered the tool.
@@ -221,12 +367,15 @@ function callBridge(method: string, params: Record<string, unknown>): Promise<st
   log(`[Server] Calling tool '${method}' → bridge [${bridgeId.slice(0,8)}] (id=${id.slice(0,28)})`);
 
   return new Promise((resolve, reject) => {
+    if (pending.size >= MAX_PENDING) {
+      return reject(new Error(`Server busy: too many pending tool calls (${MAX_PENDING})`));
+    }
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error(`Tool call '${method}' timed out`));
     }, 30_000);
-    pending.set(id, { resolve, reject, timer, method, params });
-    info.ws.send(message, (err) => {
+    pending.set(id, { resolve, reject, timer, method, params, bridgeId });
+    info.ws.send(encryptPayload(message), (err) => {
       if (err) {
         clearTimeout(timer);
         pending.delete(id);
@@ -271,6 +420,10 @@ function buildLLMMessages(req: AIRequestMessage): Array<{ role: 'system' | 'user
 function callLLM(req: AIRequestMessage): Promise<string> {
   const serverCfg = getCachedConfig();
   const llmCfg = serverCfg.llm;
+
+  if (!llmCfg.enabled) {
+    return Promise.reject(new Error('LLM is disabled on server (set llm.enabled=true in config.json)'));
+  }
 
   const apiKey = process.env.LLM_API_KEY || llmCfg.apiKey;
   if (!apiKey) {
@@ -335,7 +488,7 @@ function callLLM(req: AIRequestMessage): Promise<string> {
         try {
           const parsed = JSON.parse(data);
           if (res.statusCode && res.statusCode >= 400) {
-            reject(new Error(`LLM API error ${res.statusCode}: ${parsed.error?.message || data}`));
+            reject(new Error(`LLM API error ${res.statusCode}: ${sanitizeLLMError(parsed.error?.message || data)}`));
             return;
           }
 
@@ -348,10 +501,10 @@ function callLLM(req: AIRequestMessage): Promise<string> {
           if (content) {
             resolve(content);
           } else {
-            reject(new Error(`Invalid LLM response: ${data}`));
+            reject(new Error(`Invalid LLM response: ${sanitizeLLMError(data)}`));
           }
         } catch (e) {
-          reject(new Error(`Failed to parse LLM response: ${data}`));
+          reject(new Error(`Failed to parse LLM response: ${sanitizeLLMError(data)}`));
         }
       });
     });
@@ -387,6 +540,36 @@ async function main(): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const toolName = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+    // ── Server-side tools (bridge management) ──
+    if (toolName === 'bridge.list') {
+      const bridgeList = [...bridges.entries()].map(([id, info]) => ({
+        id,
+        clientIp: info.clientIp,
+        clientPort: info.clientPort,
+        displayName: `${info.clientIp}:${info.clientPort} (${id.slice(0, 8)})`,
+        tools: info.tools.length,
+        toolNames: info.tools.map(t => t.name),
+        connectedForMs: Date.now() - info.connectedAt,
+      }));
+      return { content: [{ type: 'text' as const, text: JSON.stringify(bridgeList, null, 2) }] };
+    }
+
+    if (toolName === 'bridge.call') {
+      const target = String(args.target || '');
+      const method = String(args.method || '');
+      const params = (args.params || {}) as Record<string, unknown>;
+      if (!target) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Missing required argument: target (bridgeId)' }) }], isError: true };
+      if (!method) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Missing required argument: method (tool name)' }) }], isError: true };
+      try {
+        const result = await callBridgeById(target, method, params);
+        return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result) }] };
+      } catch (err: any) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    }
+
+    // ── Bridge-registered tools ──
     const bridgeId = toolToBridge.get(toolName);
     if (!bridgeId) {
       if (bridges.size === 0) {
@@ -395,8 +578,9 @@ async function main(): Promise<void> {
           isError: true,
         };
       }
+      const errMsg = `No bridge registered for tool '${toolName}' (${bridges.size} bridge(s) connected - use bridge.list to see all)`;
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: `No bridge registered for tool '${toolName}' (${bridges.size} bridge(s) connected)` }) }],
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: errMsg }) }],
         isError: true,
       };
     }
@@ -415,11 +599,14 @@ async function main(): Promise<void> {
   // ── SSE transport sessions (one per connected agent) ──
   const sessions = new Map<string, SSEServerTransport>();
 
-  // ── HTTP + WebSocket Server (single port) ──
-  const httpServer = http.createServer();
+  // ── HTTP + WebSocket Server (single port, plain ws://) ──
+  // Encryption is done at the payload level (see encryptPayload/decryptPayload)
+  // rather than at the transport layer (TLS/wss://), so both Editor (Mono)
+  // and Android (IL2CPP) can connect without platform-specific TLS issues.
+  let httpServer: http.Server = http.createServer();
 
   // ── WebSocket — Bridge/Game connections ──
-  const wss = new WebSocketServer({ server: httpServer });
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: 256 * 1024 });
 
   const pingInterval = setInterval(() => {
     wss.clients.forEach((ws) => {
@@ -433,6 +620,13 @@ async function main(): Promise<void> {
     const clientPort = req.socket.remotePort || 0;
     log(`[Server] New bridge connection from ${clientIp}:${clientPort} (${bridges.size} existing bridge(s))`);
 
+    // Enforce max bridges limit
+    if (bridges.size >= MAX_BRIDGES) {
+      log(`[Server] Max bridges (${MAX_BRIDGES}) reached — rejecting new connection from ${clientIp}:${clientPort}`);
+      ws.close(1013, 'Server busy: too many bridges');
+      return;
+    }
+
     // NOTE: We do NOT close existing bridges here.
     // Multiple bridges can coexist — each identifies itself via bridgeId in register_tools.
     // This is essential for domain reload: old bridge disconnects → new bridge
@@ -443,25 +637,36 @@ async function main(): Promise<void> {
 
     function requestTools(): void {
       if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: 'request_tools' }));
+      ws.send(encryptPayload(JSON.stringify({ type: 'request_tools' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
       log('[Server] Sent request_tools to bridge');
       let attempts = 0;
-      requestToolsTimer = setTimeout(() => {
-        if (attempts < 3 && ws.readyState === WebSocket.OPEN) {
+      function scheduleRetry(): void {
+        if (attempts >= 3 || ws.readyState !== WebSocket.OPEN) return;
+        requestToolsTimer = setTimeout(() => {
           attempts++;
           log(`[Server] Re-requesting tools (attempt ${attempts + 1})...`);
-          ws.send(JSON.stringify({ type: 'request_tools' }));
-        }
-      }, 8000);
+          ws.send(encryptPayload(JSON.stringify({ type: 'request_tools' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
+          scheduleRetry();
+        }, 8000);
+      }
+      scheduleRetry();
     }
 
     ws.on('message', (raw: Buffer) => {
       let msg: any;
       const rawStr = raw.toString();
+
+      // Decrypt payload if encryption is enabled
+      const decrypted = decryptPayload(rawStr);
+      if (decrypted === null) {
+        log('[Server] Failed to decrypt bridge message');
+        return;
+      }
+
       try {
-        msg = JSON.parse(rawStr);
+        msg = JSON.parse(decrypted);
       } catch {
-        log('[Server] Invalid JSON from bridge:', rawStr.slice(0, 200));
+        log('[Server] Invalid JSON from bridge:', decrypted.slice(0, 200));
         return;
       }
 
@@ -484,7 +689,7 @@ async function main(): Promise<void> {
         isUnityCompiling = false;
 
         // Add/update this bridge in the bridges map
-        bridges.set(id, { ws, id, tools: msg.tools, connectedAt: Date.now() });
+        bridges.set(id, { ws, id, tools: msg.tools, connectedAt: Date.now(), clientIp, clientPort });
         // Update tool→bridge routing (later bridges overwrite earlier for same-named tools)
         for (const tool of msg.tools) {
           toolToBridge.set(tool.name, id);
@@ -513,8 +718,12 @@ async function main(): Promise<void> {
         log(`[Server] AI request: ${requestId}, prompt: ${String(msg.prompt || '').slice(0, 80)}`);
 
         const llmCfg = getCachedConfig().llm;
+        if (!llmCfg.enabled) {
+          ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'LLM is disabled on server (set llm.enabled=true in config.json)' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
+          return;
+        }
         if (!llmCfg.apiKey) {
-          ws.send(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'LLM not configured on server' }));
+          ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'LLM API key not configured (set llm.apiKey in config.json or LLM_API_KEY env var)' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
           return;
         }
 
@@ -528,19 +737,19 @@ async function main(): Promise<void> {
         const aiTimeout = setTimeout(() => {
           if (pendingAI.has(requestId)) {
             pendingAI.delete(requestId);
-            ws.send(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'LLM request timed out (90s)' }));
+            ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'LLM request timed out (90s)' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
           }
         }, 90_000);
 
         pendingAI.set(requestId, {
           resolve: (text: string) => {
             clearTimeout(aiTimeout);
-            ws.send(JSON.stringify({ type: 'ai_response', requestId, text, error: null }));
+            ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text, error: null })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
             pendingAI.delete(requestId);
           },
           reject: (err: Error) => {
             clearTimeout(aiTimeout);
-            ws.send(JSON.stringify({ type: 'ai_response', requestId, text: null, error: err.message }));
+            ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: err.message })), (err2) => { if (err2) log('[Server] ws.send failed:', err2.message); });
             pendingAI.delete(requestId);
           },
           timer: aiTimeout,
@@ -595,15 +804,21 @@ async function main(): Promise<void> {
     requestTools();
 
     ws.on('close', () => {
-      // Remove this bridge from the map
+      // Clear the request-tools timer (Bug fix: timer leak on early disconnect)
+      if (requestToolsTimer) {
+        clearTimeout(requestToolsTimer);
+        requestToolsTimer = null;
+      }
+
+      // If this bridge had registered, clean up its state
       if (bridgeId && bridges.has(bridgeId)) {
         log(`[Server] Bridge disconnected  [ID: ${bridgeId.slice(0, 8)} IP: ${clientIp}:${clientPort}] (${bridges.size - 1} remaining)`);
+        const info = bridges.get(bridgeId)!;
+
         // Remove this bridge's tools from the routing table,
         // and fall back to another bridge that also registered the same tool
-        const info = bridges.get(bridgeId)!;
         for (const tool of info.tools) {
           if (toolToBridge.get(tool.name) === bridgeId) {
-            // Check if any other bridge still has this tool
             let fallback = false;
             for (const [otherId, otherInfo] of bridges) {
               if (otherId !== bridgeId && otherInfo.tools.some(t => t.name === tool.name)) {
@@ -618,16 +833,23 @@ async function main(): Promise<void> {
             }
           }
         }
+
+        // Reject pending tool calls for THIS specific bridge (Bug fix: was hanging 30s)
+        const lostCount = rejectPendingForBridge(bridgeId, 'Bridge disconnected');
+        if (lostCount > 0) {
+          log(`[Server] Rejected ${lostCount} pending tool call(s) for disconnected bridge [${bridgeId.slice(0, 8)}]`);
+        }
+
         bridges.delete(bridgeId);
         bridgeId = null;
       } else {
         log(`[Server] Bridge disconnected (no bridgeId, IP: ${clientIp}:${clientPort}) (${bridges.size} remaining)`);
       }
 
-      // If ALL bridges are gone, move in-flight tool calls to retry queue
+      // If ALL bridges are now gone, handle remaining pending calls (if any)
       if (bridges.size === 0) {
         if (pending.size > 0) {
-          log(`[Server] No bridges remaining — moving ${pending.size} pending tool calls to retry queue`);
+          log(`[Server] No bridges remaining — moving ${pending.size} pending tool call(s) to retry queue`);
           for (const [_id, entry] of pending) {
             clearTimeout(entry.timer);
             retryQueue.push({
@@ -635,6 +857,7 @@ async function main(): Promise<void> {
               reject: entry.reject,
               method: entry.method,
               params: entry.params,
+              bridgeId: entry.bridgeId,
             });
           }
           pending.clear();
@@ -652,13 +875,18 @@ async function main(): Promise<void> {
           }
         }, 30_000);
 
-        // AI pending requests don't need bridge — reject immediately
-        for (const [_id, entry] of pendingAI) { clearTimeout(entry.timer); entry.reject(new Error('All bridges disconnected')); }
-        pendingAI.clear();
+        // AI pending requests complete independently via LLM — don't reject
+        if (pendingAI.size > 0) {
+          log(`[Server] Bridge disconnected — ${pendingAI.size} AI requests still in-flight (will complete independently)`);
+        }
       }
     });
 
-    ws.on('error', (err: Error) => log(`[Server] Bridge error [IP: ${clientIp}:${clientPort}]`, err.message));
+    ws.on('error', (err: Error) => {
+      log(`[Server] Bridge error [IP: ${clientIp}:${clientPort}]`, err.message);
+      // Force-close on error to trigger the close handler cleanup (Bug fix)
+      try { ws.close(); } catch { /* already closing */ }
+    });
   });
 
   wss.on('error', (err: Error) => log('[Server] WebSocket error:', err.message));
@@ -768,6 +996,9 @@ async function main(): Promise<void> {
       const llmCfg = loadAppConfig().llm;
       const bridgeList = [...bridges.entries()].map(([id, info]) => ({
         id,
+        clientIp: info.clientIp,
+        clientPort: info.clientPort,
+        displayName: `${info.clientIp}:${info.clientPort} (${id.slice(0, 8)})`,
         tools: info.tools.length,
         connectedFor: Date.now() - info.connectedAt,
         toolNames: info.tools.map(t => t.name),
@@ -782,6 +1013,7 @@ async function main(): Promise<void> {
         playModeState,
         sessions: sessions.size,
         uptime: process.uptime(),
+            llmEnabled: llmCfg.enabled,
         llmConfigured: !!llmCfg.apiKey,
         llmProvider: llmCfg.provider,
         llmModel: llmCfg.model,
@@ -797,6 +1029,9 @@ async function main(): Promise<void> {
   let isInitialized = false;
 
   async function handleDirectRPC(msg: any): Promise<any> {
+    if (!msg || typeof msg !== 'object') {
+      return { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null };
+    }
     if (msg.method === 'initialize') {
       isInitialized = true;
       return {
@@ -827,10 +1062,44 @@ async function main(): Promise<void> {
     }
 
     if (msg.method === 'tools/call') {
-      const toolName = msg.params?.name;
-      const args = msg.params?.arguments ?? {};
-      // Find which bridge registered this tool
-      const bridgeId = toolToBridge.get(String(toolName));
+      const toolName = String(msg.params?.name || '');
+      const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+
+      // ── Server-side tools ──
+      if (toolName === 'bridge.list') {
+        const bridgeList = [...bridges.entries()].map(([id, info]) => ({
+          id,
+          clientIp: info.clientIp,
+          clientPort: info.clientPort,
+          displayName: `${info.clientIp}:${info.clientPort} (${id.slice(0, 8)})`,
+          tools: info.tools.length,
+          toolNames: info.tools.map(t => t.name),
+          connectedForMs: Date.now() - info.connectedAt,
+        }));
+        return {
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { content: [{ type: 'text', text: JSON.stringify(bridgeList, null, 2) }] },
+        };
+      }
+
+      if (toolName === 'bridge.call') {
+        const target = String(args.target || '');
+        const method = String(args.method || '');
+        const params = (args.params || {}) as Record<string, unknown>;
+        if (!target) return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Missing required argument: target (bridgeId)' } };
+        if (!method) return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Missing required argument: method (tool name)' } };
+        try {
+          const result = await callBridgeById(target, method, params);
+          const text = typeof result === 'string' ? result : JSON.stringify(result);
+          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
+        } catch (err: any) {
+          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err.message } };
+        }
+      }
+
+      // ── Bridge-registered tools ──
+      const bridgeId = toolToBridge.get(toolName);
       if (!bridgeId) {
         return {
           jsonrpc: '2.0',
@@ -839,7 +1108,7 @@ async function main(): Promise<void> {
         };
       }
       try {
-        const result = await callBridge(String(toolName), args);
+        const result = await callBridge(toolName, args);
         const text = typeof result === 'string' ? result : JSON.stringify(result);
         return {
           jsonrpc: '2.0',
@@ -865,12 +1134,16 @@ async function main(): Promise<void> {
     log(`[Server] Agent POST → POST /mcp  (send JSON-RPC messages)`);
     log(`[Server] Scripts    → POST /rpc  (direct JSON-RPC, no SSE needed)`);
     log(`[Server] Health     → GET  /health`);
+    log(`[Server] Payload encryption: ${appCfg.encryptionKey ? 'enabled (AES-256-CBC)' : 'disabled'}`);
+    log(`[Server] eval tools: ${appCfg.evalEnabled ? 'enabled' : 'disabled'}`);
     log(`[Server] Bridge     → ws://${appCfg.ip}:${appCfg.port}/ (WebSocket)`);
     const llmCfg = appCfg.llm;
-    if (llmCfg.apiKey) {
-      log(`[Server] LLM configured: ${llmCfg.provider} / ${llmCfg.model}`);
+    if (!llmCfg.enabled) {
+      log(`[Server] LLM: disabled (set llm.enabled=true in config.json)`);
+    } else if (llmCfg.apiKey) {
+      log(`[Server] LLM enabled: ${llmCfg.provider} / ${llmCfg.model}`);
     } else {
-      log(`[Server] LLM: not configured (set llm.apiKey in config.json to enable AI features)`);
+      log(`[Server] LLM enabled but not configured (set llm.apiKey in config.json or LLM_API_KEY env var)`);
     }
   });
 

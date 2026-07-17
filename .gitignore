@@ -22,3 +22,6 @@ Thumbs.db
 
 # Logs
 npm-debug.log*
+
+# Config (contains API keys — use config.json.template instead)
+config.json
