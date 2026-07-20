@@ -18,7 +18,7 @@
  *   Local dev:  { "ip": "127.0.0.1", "port": 45678 }
  *   Cloud:      { "ip": "0.0.0.0",   "port": 45678 }
  *   LLM:        { "provider": "openai", "baseUrl": "...", "apiKey": "...", "model": "gpt-4o" }
- *   Encryption: set encryptionKey in config.json (same key on Bridge) to enable AES-256-CBC payload encryption
+ *   Encryption: set encryption=true + encryptionKey in config.json (same key on Bridge) to enable AES-256-CBC payload encryption
  *
  * Start:   node dist/index.js
  * Test:    curl http://127.0.0.1:45678/health
@@ -105,6 +105,7 @@ interface AppConfig {
   ip: string;
   port: number;
   evalEnabled: boolean;
+  encryption: boolean;
   encryptionKey: string;
   llm: LLMConfig;
 }
@@ -121,6 +122,7 @@ function loadAppConfig(): AppConfig {
     ip: '127.0.0.1',
     port: 45678,
     evalEnabled: true,
+    encryption: false,
     encryptionKey: '',
     llm: {
       enabled: false,
@@ -142,34 +144,38 @@ function loadAppConfig(): AppConfig {
 }
 
 // ── Payload encryption (shared-key AES-256-CBC) ──
-// Optional: set encryptionKey in config.json to enable.
-// Bridge must use the same key. Empty key = no encryption (plain ws://).
+// Requires both encryption=true in config and a non-empty encryptionKey.
+// Format: #ENC#<base64(IV + ciphertext)> — matches bridge EncryptionHelper exactly.
+// Bridge uses the same key. When encryption is OFF, payloads are sent as plaintext.
 
-function getEncryptionKey(): string {
-  return getCachedConfig().encryptionKey || '';
+function isEncryptionEnabled(): boolean {
+  const cfg = getCachedConfig();
+  return cfg.encryption && cfg.encryptionKey.length > 0;
 }
 
 function encryptPayload(text: string): string {
-  const key = getEncryptionKey();
-  if (!key) return text;
+  if (!isEncryptionEnabled()) return text;
+  const key = getCachedConfig().encryptionKey;
   const keyBytes = crypto.createHash('sha256').update(key).digest();
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
   const enc = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
   const combined = Buffer.concat([iv, enc]);
-  return JSON.stringify({ encrypted: combined.toString('base64') });
+  return '#ENC#' + combined.toString('base64');
 }
 
 function decryptPayload(data: string): string | null {
-  const key = getEncryptionKey();
-  if (!key) return data;
+  if (!isEncryptionEnabled()) return data;
   try {
-    const parsed = JSON.parse(data);
-    if (!parsed || typeof parsed.encrypted !== 'string') return data;
-    const combined = Buffer.from(parsed.encrypted, 'base64');
+    // Check for #ENC# prefix (bridge format)
+    const trimmed = data.trimStart();
+    if (!trimmed.startsWith('#ENC#')) return data;
+    const b64 = trimmed.slice(5).trim();
+    const combined = Buffer.from(b64, 'base64');
     if (combined.length <= 16) return null;
     const iv = combined.subarray(0, 16);
     const ct = combined.subarray(16);
+    const key = getCachedConfig().encryptionKey;
     const keyBytes = crypto.createHash('sha256').update(key).digest();
     const decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, iv);
     const dec = Buffer.concat([decipher.update(ct), decipher.final()]);
@@ -637,6 +643,10 @@ async function main(): Promise<void> {
 
     function requestTools(): void {
       if (ws.readyState !== WebSocket.OPEN) return;
+      // Notify bridge of encryption status before requesting tools
+      const encryptionOn = isEncryptionEnabled();
+      ws.send(JSON.stringify({ type: 'server_info', encryption: encryptionOn }), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
+      log(`[Server] Sent server_info (encryption=${encryptionOn}) to bridge`);
       ws.send(encryptPayload(JSON.stringify({ type: 'request_tools' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
       log('[Server] Sent request_tools to bridge');
       let attempts = 0;
@@ -659,7 +669,9 @@ async function main(): Promise<void> {
       // Decrypt payload if encryption is enabled
       const decrypted = decryptPayload(rawStr);
       if (decrypted === null) {
-        log('[Server] Failed to decrypt bridge message');
+        log('[Server] Failed to decrypt bridge message — key mismatch?');
+        // Send error as plaintext (peer clearly can't decrypt encrypted frames)
+        try { ws.send(JSON.stringify({ type: 'error', code: 'decrypt_failed', message: 'Payload decryption failed — check encryptionKey' })); } catch {}
         return;
       }
 
@@ -1049,10 +1061,8 @@ async function main(): Promise<void> {
       return null;
     }
 
-    if (!isInitialized) {
-      return { jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'Not initialized. Send initialize first.' } };
-    }
-
+    // /rpc endpoint is direct JSON-RPC — no MCP initialize handshake required.
+    // (The isInitialized flag is only for the SSE-based /mcp session.)
     if (msg.method === 'tools/list') {
       return {
         jsonrpc: '2.0',
@@ -1134,7 +1144,7 @@ async function main(): Promise<void> {
     log(`[Server] Agent POST → POST /mcp  (send JSON-RPC messages)`);
     log(`[Server] Scripts    → POST /rpc  (direct JSON-RPC, no SSE needed)`);
     log(`[Server] Health     → GET  /health`);
-    log(`[Server] Payload encryption: ${appCfg.encryptionKey ? 'enabled (AES-256-CBC)' : 'disabled'}`);
+    log(`[Server] Payload encryption: ${appCfg.encryption && appCfg.encryptionKey ? 'enabled (AES-256-CBC)' : 'disabled'} (config.encryption=${appCfg.encryption})`);
     log(`[Server] eval tools: ${appCfg.evalEnabled ? 'enabled' : 'disabled'}`);
     log(`[Server] Bridge     → ws://${appCfg.ip}:${appCfg.port}/ (WebSocket)`);
     const llmCfg = appCfg.llm;
