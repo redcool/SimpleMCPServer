@@ -274,13 +274,20 @@ function getMergedTools(): Array<{ name: string; description: string; inputSchem
     seen.add(tool.name);
     merged.push({ ...tool, inputSchema: { type: 'object' } });
   }
-  // Merge bridge tools (last-registration-wins)
+  // Merge bridge tools (last-registration-wins) — annotate the current routing target
   for (const [_id, info] of [...bridges.entries()].reverse()) {
     for (const tool of info.tools) {
       if (!cfg.evalEnabled && tool.name === 'editor.eval') continue;
       if (!seen.has(tool.name)) {
         seen.add(tool.name);
-        merged.push({ ...tool, inputSchema: { type: 'object' } });
+        // Determine which bridge this tool currently routes to (toolToBridge holds the
+        // last-registration-wins target — the bridge an actual call would hit).
+        const targetId = toolToBridge.get(tool.name);
+        const targetInfo = targetId ? bridges.get(targetId) : undefined;
+        const sourceTag = targetInfo && targetId
+          ? `[bridge: ${targetInfo.clientIp}:${targetInfo.clientPort} (${targetId.slice(0, 8)})] `
+          : '';
+        merged.push({ ...tool, description: sourceTag + tool.description, inputSchema: { type: 'object' } });
       }
     }
   }
