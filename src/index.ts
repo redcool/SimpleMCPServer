@@ -83,6 +83,9 @@ const MAX_AB_SIZE = 512 * 1024 * 1024; // 512MB — streamed AssetBundle upload/
 const MAX_BRIDGES = 50;
 const MAX_PENDING = 10000;
 
+// ── WebSocket liveness tracking (half-open connection reaping) ──
+type AliveWebSocket = WebSocket & { isAlive?: boolean; clientIp?: string };
+
 // ── Sanitize API keys in error messages ──
 function sanitizeLLMError(text: string): string {
   return text.replace(/sk-[A-Za-z0-9]{20,}/g, '[REDACTED]');
@@ -92,6 +95,7 @@ function sanitizeLLMError(text: string): string {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(__dirname, '..', 'config.json');
+const CONFIG_TEMPLATE_PATH = join(__dirname, '..', 'config.json.template');
 
 interface LLMConfig {
   enabled: boolean;
@@ -110,6 +114,8 @@ interface AppConfig {
   encryption: boolean;
   encryptionKey: string;
   abCacheDir: string;
+  /** IPs allowed to call the AI-facing HTTP endpoints (/rpc, /sse, /mcp). Default: loopback only. */
+  allowedIps: string[];
   llm: LLMConfig;
 }
 
@@ -120,6 +126,8 @@ function getCachedConfig(): AppConfig {
   return appConfigCache;
 }
 
+const DEFAULT_ALLOWED_IPS = ['127.0.0.1', '::1'];
+
 function loadAppConfig(): AppConfig {
   const defaults: AppConfig = {
     ip: '127.0.0.1',
@@ -127,6 +135,7 @@ function loadAppConfig(): AppConfig {
     evalEnabled: true,
     encryption: false,
     encryptionKey: '',
+    allowedIps: [...DEFAULT_ALLOWED_IPS],
     llm: {
       enabled: false,
       provider: 'openai',
@@ -138,13 +147,38 @@ function loadAppConfig(): AppConfig {
     },
     abCacheDir: join(process.cwd(), 'ab-cache'),
   };
+  // ── Auto-create config.json from config.json.template when missing ──
+  // Replaces the manual "rename .template" step. config.json is gitignored,
+  // so this never touches tracked files.
+  if (!existsSync(CONFIG_PATH) && existsSync(CONFIG_TEMPLATE_PATH)) {
+    try {
+      copyFileSync(CONFIG_TEMPLATE_PATH, CONFIG_PATH);
+      log('[Server] config.json not found — copied from config.json.template');
+    } catch (e: any) {
+      log('[Server] Failed to copy config.json.template → config.json:', e.message);
+    }
+  }
   if (!existsSync(CONFIG_PATH)) return defaults;
   try {
-    return { ...defaults, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) };
+    const cfg: AppConfig = { ...defaults, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) };
+    // Missing/absent/empty allowedIps → loopback-only default
+    if (!Array.isArray(cfg.allowedIps) || cfg.allowedIps.length === 0) {
+      cfg.allowedIps = [...DEFAULT_ALLOWED_IPS];
+    }
+    return cfg;
   } catch (e: any) {
     log('[Server] Config parse error, using defaults:', e.message);
     return defaults;
   }
+}
+
+/** True if the given remote address may call AI-facing HTTP endpoints.
+ *  Normalizes IPv4-mapped IPv6 (::ffff:127.0.0.1 → 127.0.0.1). */
+function isIpAllowed(remoteAddress: string | undefined): boolean {
+  if (!remoteAddress) return false;
+  let ip = remoteAddress;
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  return getCachedConfig().allowedIps.includes(ip);
 }
 
 // ── AssetBundle cache & phone-reachable host helper ──
@@ -676,15 +710,30 @@ async function main(): Promise<void> {
   let httpServer: http.Server = http.createServer();
 
   // ── WebSocket — Bridge/Game connections ──
-  const wss = new WebSocketServer({ server: httpServer, maxPayload: 256 * 1024 });
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: 4 * 1024 * 1024 });
 
+  // Pong tracking: a bridge that stops responding to pings is half-open (dead socket
+  // that never fires 'close'). Reap it with terminate() so its bridge slot frees up
+  // and it doesn't linger against MAX_BRIDGES. terminate() triggers 'close' → the
+  // normal connection cleanup path removes it from the bridges map / routing.
   const pingInterval = setInterval(() => {
     wss.clients.forEach((ws) => {
+      const aliveWs = ws as AliveWebSocket;
+      if (aliveWs.isAlive === false) {
+        log(`[Server] Bridge unresponsive (no pong) — terminating ${aliveWs.clientIp || 'unknown'}`);
+        ws.terminate();
+        return;
+      }
+      aliveWs.isAlive = false;
       if (ws.readyState === WebSocket.OPEN) ws.ping();
     });
   }, 30_000);
 
   wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+    const aliveWs = ws as AliveWebSocket;
+    aliveWs.isAlive = true;
+    aliveWs.clientIp = req.socket.remoteAddress || 'unknown';
+    ws.on('pong', () => { aliveWs.isAlive = true; });
     // Log client IP and port — keep reference for disconnect/error logs
     const clientIp = req.socket.remoteAddress || 'unknown';
     const clientPort = req.socket.remotePort || 0;
@@ -746,15 +795,17 @@ async function main(): Promise<void> {
         return;
       }
 
-      // Debug: log every incoming message type
+      // Debug: log every incoming message type + payload size (NOT the body — may contain
+      // scene data / prompts / tool args)
       const idStr = String(msg.id ?? '');
+      const payloadSize = raw.byteLength;
       if (msg.type) {
-        log(`[Server] Received message type="${msg.type}" from bridge [id=${idStr.slice(0,20) || 'none'}]`);
+        log(`[Server] Received message type="${msg.type}" from bridge [id=${idStr.slice(0,20) || 'none'}] (${payloadSize} bytes)`);
       } else if (msg.id) {
         // Tool response — look up tool name from pending map
         const pendingEntry = pending.get(msg.id);
         const toolLabel = pendingEntry ? ` tool='${pendingEntry.method}'` : '';
-        log(`[Server] Received tool response${toolLabel} id="${idStr.slice(0,24)}"`);
+        log(`[Server] Received tool response${toolLabel} id="${idStr.slice(0,24)}" (${payloadSize} bytes)`);
       }
 
       // ── Tool registration (bridge identifies itself) ──
@@ -977,6 +1028,13 @@ async function main(): Promise<void> {
 
     // ── MCP SSE endpoint (GET) — agent establishes SSE stream ──
     if (req.method === 'GET' && url.pathname === '/sse') {
+      // IP whitelist (AI-facing endpoint — local-only by default)
+      if (!isIpAllowed(req.socket.remoteAddress)) {
+        log(`[Server] Rejected /sse from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
       const transport = new SSEServerTransport('/mcp', res);
       sessions.set(transport.sessionId, transport);
       log(`[Server] SSE session started: ${transport.sessionId}`);
@@ -1000,6 +1058,13 @@ async function main(): Promise<void> {
 
     // ── MCP POST endpoint — agent sends JSON-RPC messages ──
     if (req.method === 'POST' && url.pathname === '/mcp') {
+      // IP whitelist (AI-facing endpoint — local-only by default)
+      if (!isIpAllowed(req.socket.remoteAddress)) {
+        log(`[Server] Rejected /mcp from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
       const sessionId = url.searchParams.get('sessionId');
       const transport = sessionId ? sessions.get(sessionId) : null;
 
@@ -1033,6 +1098,13 @@ async function main(): Promise<void> {
 
     // ── Direct JSON-RPC endpoint (no SSE needed — for tests & scripts) ──
     if (req.method === 'POST' && url.pathname === '/rpc') {
+      // IP whitelist (AI-facing endpoint — local-only by default)
+      if (!isIpAllowed(req.socket.remoteAddress)) {
+        log(`[Server] Rejected /rpc from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
       const rpcTimeout = setTimeout(() => {
         if (!res.headersSent) {
           res.writeHead(408, { 'Content-Type': 'application/json' });

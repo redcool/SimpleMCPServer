@@ -130,7 +130,9 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 
 解析优先级：`instanceId` > `path`。`get_hierarchy` 和 `get_objects` 的返回值同时包含两者。
 
-## 可用工具（共 23 个）
+## 可用工具
+
+工具由 Unity Bridge 通过 `register_tools` 动态注册，数量随桥接平台/条件编译变化（当前 Editor 桥实测 108 个桥工具 + 服务端合成 2 个 = 110 个）。下表按类别简述常用工具；完整清单见 [SimpleMCPBridge](https://github.com/redcool/SimpleMCPBridge_Unity) 仓库 README。
 
 ### 场景工具（SceneHandler）
 
@@ -155,6 +157,9 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 | `scene.exit_play_mode` | 退出播放模式（仅 Editor） |
 | `scene.pause_play_mode` | 暂停/继续播放模式 — 传 `paused: true/false`（仅 Editor） |
 | `scene.get_play_mode` | 获取当前播放模式状态 — 返回 isPlaying/isPaused/mode（仅 Editor） |
+| `scene.load_scene` | 加载场景（按 Assets 路径，支持 `.unity` 后缀省略）（仅 Editor） |
+| `scene.save_prefab` | 将 GameObject 保存为预制体（仅 Editor） |
+| `scene.call_component_method` | 调用组件公开方法，带黑名单/白名单权限控制 |
 
 ### 资源工具（AssetHandler，仅 Editor）
 
@@ -162,6 +167,10 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 |------|------|
 | `asset.find_assets` | 按名称和/或类型搜索项目 Assets。参数：`nameContains`（可选）、`typeFilter`（可选，如 `"Prefab"`、`"Material"`）。返回 `{path, name, type, guid}` 列表 |
 | `asset.find_references` | 查找引用了指定资源的所有资源（反向依赖）。参数：`assetPath`（必填）。扫描文件内容中的 GUID，返回引用者列表。可靠但较慢 |
+| `asset.create` | 创建资源（材质/文件夹等）（仅 Editor） |
+| `asset.delete` | 删除资源（带引用预检，force 可跳过）（仅 Editor） |
+| `asset.rename` | 重命名资源（仅 Editor） |
+| `asset.move` | 移动资源到新路径（仅 Editor） |
 
 ### 录制工具（RecordingHandler）
 
@@ -182,15 +191,43 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 | `editor.request_compile` | 触发 Unity 脚本重新编译（外部修改 C# 后用）（仅 Editor） |
 | `editor.open_window` | 按菜单路径打开 Unity Editor 窗口，如 `"Window/General/Console"`（仅 Editor） |
 
+### PlayerPrefs 工具（PlayerPrefsHandler）
+
+| 工具 | 说明 |
+|------|------|
+| `playerprefs.get_all` | 读取全部 PlayerPrefs（按 key 过滤可选） |
+| `playerprefs.get` | 读取单个 key |
+| `playerprefs.set` | 设置 key（自动类型推断） |
+| `playerprefs.delete` | 删除 key（支持通配符） |
+
+### UI Toolkit 工具（UIToolkitHandler）
+
+| 工具 | 说明 |
+|------|------|
+| `uitk.create_element` | 在指定面板创建视觉元素 |
+| `uitk.remove_element` | 移除视觉元素 |
+
 ## 配置
 
-编辑 `config.json`：
+编辑 `config.json`（不存在时首次启动自动从 `config.json.template` 复制生成，见「首次运行」）。完整字段：
 
 ```json
-{ "ip": "127.0.0.1", "port": 45678 }
+{
+    "ip": "0.0.0.0",
+    "port": 45678,
+    "encryptionKey": "",
+    "encryption": false,
+    "evalEnabled": true,
+    "allowedIps": ["127.0.0.1", "::1"],
+    "llm": { "enabled": true, "provider": "agnes", "baseUrl": "https://apihub.agnes-ai.com/v1", "apiKey": "YOUR_API_KEY_HERE", "model": "agnes-2.0-flash", "temperature": 0.7, "maxTokens": 1024 }
+}
 ```
 
-本地开发用 `127.0.0.1`，云端部署用 `0.0.0.0`。
+- `ip`/`port`：监听地址与端口。本地 `127.0.0.1`，云端 `0.0.0.0`
+- `encryption`/`encryptionKey`：可选 AES-256-CBC 载荷加密（替代 TLS/wss），Server 与 Bridge 配置需一致；空密钥 = 透传
+- `evalEnabled`：`editor.eval` 工具开关（Editor 侧仍有自己的开关，见桥 README）
+- `allowedIps`：**IP 白名单（本版本新增）**——只放行白名单内的客户端调用 HTTP `/rpc`、`/sse`、`/mcp` 端点，其余返回 403；默认 `["127.0.0.1","::1"]` 仅本机；**WebSocket 与 `/ab` 资源端点不受此限制**。配置缺失时自动从 `config.json.template` 复制生成 config.json（首次启动自动创建，见「首次运行」）；**字段缺失/为空数组/非数组时回退到默认 `["127.0.0.1","::1"]`（仅本机）**
+- `llm`：LLM 配置（apiKey 用环境变量 `LLM_API_KEY` 覆盖更安全；config.json 已被 .gitignore 排除，勿提交真实 key）
 
 ## 开发
 
@@ -224,6 +261,9 @@ Get-Process -Name "node" | Stop-Process -Force
 **测试超时**
 → E2E 测试会启动自己的 Server 实例，Bridge 需要通过重试循环重连到新 Server
 
+**HTTP 调用返回 403**
+→ 请求源 IP 不在 `allowedIps` 白名单。修改 config.json 的 `allowedIps` 加来源 IP 后重启服务端。
+
 ## 相关仓库
 
 | 仓库 | 说明 |
@@ -239,3 +279,8 @@ Get-Process -Name "node" | Stop-Process -Force
 - Unity Bridge 使用纯 TCP 实现 RFC 6455 WebSocket，零外部依赖
 - Server 同时暴露 HTTP `/rpc` 端点用于程序化调用（E2E 测试使用）
 - `/health` 端点返回 bridge 连接状态、工具列表、播放模式状态
+- HTTP `/rpc`、`/sse`、`/mcp` 端点受 `allowedIps` 白名单 gate（403）；WebSocket 升级路径与 `/ab` 不受限
+- 消息负载上限 4MB（maxPayload）
+- 服务端每 ~30s ping、超时未 pong 判定失活并 `terminate()` 断连（isAlive 心跳）
+- 日志脱敏：工具名 + 参数长度（不打印明文 payload），错误路径保留详情
+- config.json 不存在时首次启动自动从 template 复制生成；改完配置重启生效

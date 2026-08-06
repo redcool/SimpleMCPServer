@@ -2,7 +2,9 @@
     "ip": "0.0.0.0",
     "port": 45678,
     "encryptionKey": "",
+    "encryption": false,
     "evalEnabled": true,
+    "allowedIps": ["127.0.0.1", "::1"],
     "llm": {
         "enabled": true,
         "provider": "agnes",
