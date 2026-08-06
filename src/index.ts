@@ -265,14 +265,14 @@ const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Reco
   },
 ];
 
-function getMergedTools(): Array<{ name: string; description: string; inputSchema: { type: string } }> {
+function getMergedTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
   const cfg = getCachedConfig();
   const seen = new Set<string>();
-  const merged: Array<{ name: string; description: string; inputSchema: { type: string } }> = [];
+  const merged: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [];
   // Include server-side tools first
   for (const tool of SERVER_TOOLS) {
     seen.add(tool.name);
-    merged.push({ ...tool, inputSchema: { type: 'object' } });
+    merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
   }
   // Merge bridge tools (last-registration-wins) — annotate the current routing target
   for (const [_id, info] of [...bridges.entries()].reverse()) {
@@ -287,7 +287,7 @@ function getMergedTools(): Array<{ name: string; description: string; inputSchem
         const sourceTag = targetInfo && targetId
           ? `[bridge: ${targetInfo.clientIp}:${targetInfo.clientPort} (${targetId.slice(0, 8)})] `
           : '';
-        merged.push({ ...tool, description: sourceTag + tool.description, inputSchema: { type: 'object' } });
+        merged.push({ ...tool, description: sourceTag + tool.description, inputSchema: tool.inputSchema ?? { type: 'object' } });
       }
     }
   }
@@ -339,7 +339,7 @@ function callBridgeById(bridgeId: string, method: string, params: Record<string,
 interface BridgeInfo {
   ws: WebSocket;
   id: string;
-  tools: Array<{ name: string; description: string }>;
+  tools: Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
   connectedAt: number;
   clientIp: string;
   clientPort: number;
