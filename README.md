@@ -50,26 +50,39 @@ npm run build
 
 ## 使用
 
-### 前置：clone 并配置 SimpleMCPBridge
+### 前置：安装 SimpleMCPBridge
 
 ```bash
 cd YourUnityProject/Assets/
-git clone https://github.com/redcool/SimpleMCPBridge_Unity.git
+git clone https://github.com/redcool/SimpleMCPBridge_Unity.git SimpleMCPBridge
 ```
 
-编辑 `Assets/SimpleMCPBridge/bridge-config.json`：
-
-```json
-{ "serverIp": "127.0.0.1", "serverPort": 45678 }
-```
-
-### 1. 启动 Unity Bridge
+### 1. 启动 Unity Bridge（prefab 方式）
 
 1. 用 Unity 打开项目
-2. 菜单栏 → **PowerUtilities → SimpleMCPBridge**
-3. 点击 **Connect to Server**
+2. 将 `Assets/SimpleMCPBridge/Prefabs/MCPBridge.prefab` 拖入场景（或给任意 GameObject 添加 `MCPBridge` 组件）
+3. 选中该对象，Inspector 顶部即显示连接状态（● Connected / ○ Disconnected）、`ws://ip:port`、Bridge ID 与 **Connect / Disconnect** 按钮
+4. Server IP / Port 默认 `127.0.0.1:45678`，如需修改见下方 `bridge-config.json`
 
-Bridge 生命周期独立于窗口：关闭窗口后 bridge 继续运行，进出 Play Mode 自动重连（依赖 `[InitializeOnLoad]` + EditorPrefs 持久化标志）。
+Bridge 通过 `[ExecuteAlways]` 在 Edit Mode、Play Mode、打包运行三态下均工作；默认 `isAutoReconnect=true`，场景加载、进出 Play Mode、脚本重编译（domain reload）后自动重连，无需手动操作。
+
+#### bridge-config.json（可选，默认即可用）
+
+Bridge 启动时自动加载配置——**配置文件不存在时，首次自动从包内 `Resources/bridge-config.json` 拷贝生成（已存在则不覆盖），改完需重启生效**：
+
+| 环境 | 路径 |
+|------|------|
+| Editor | 项目 `Assets/SimpleMCPBridge-config/bridge-config.json` |
+| Player | `Application.persistentDataPath/bridge-config.json` |
+| 兜底 | 包内 `Resources/bridge-config.json`（内嵌默认值）|
+
+```json
+{ "serverIp": "127.0.0.1", "serverPort": 45678, "encryptionKey": "" }
+```
+
+- `serverIp`/`serverPort` — 与 Server 侧 `config.json` 的 `ip`/`port` 对应
+- `encryptionKey` — 与 Server 侧 `encryptionKey` 一致时启用 AES-256-CBC 载荷加密；空 = 透传
+- `methodBlocklist` / `methodAllowlist`（可选）— `scene.call_component_method` 权限控制，详见桥 README
 
 ### 2. 启动 MCP Server
 
@@ -132,7 +145,7 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 
 ## 可用工具
 
-工具由 Unity Bridge 通过 `register_tools` 动态注册，数量随桥接平台/条件编译变化（当前 Editor 桥实测 108 个桥工具 + 服务端合成 2 个 = 110 个）。下表按类别简述常用工具；完整清单见 [SimpleMCPBridge](https://github.com/redcool/SimpleMCPBridge_Unity) 仓库 README。
+工具由 Unity Bridge 通过 `register_tools` 动态注册，数量随桥接平台/条件编译变化（当前 Editor 桥实测 127 个桥工具 + 服务端合成 2 个 = 129 个）。下表按类别简述常用工具；完整清单见 [SimpleMCPBridge](https://github.com/redcool/SimpleMCPBridge_Unity) 仓库 README。
 
 ### 场景工具（SceneHandler）
 
@@ -237,11 +250,20 @@ node tests/test-e2e.cjs  # E2E 测试
 
 # 目录结构
 src/
-├── index.ts           # 入口 + WS Server + MCP handlers
+├── index.ts           # 入口（启动 server）
+├── server.ts          # WS Server + MCP handlers（核心）
+├── bridgeState.ts     # bridge 连接状态/路由（last-registration-wins、failover）
+├── ab.ts              # AssetBundle 上传/部署端点
+├── crypto.ts          # AES-256-CBC 载荷加密（#ENC# 前缀）
+├── config.ts          # config.json 加载（缺失时从 template 生成）
+├── llm.ts             # LLM 代理（ai_request/ai_response）
+├── logger.ts          # 日志（stderr + server.log，脱敏）
+├── tools.ts           # 服务端合成工具（bridge.list / bridge.call）
 └── types.ts           # 类型定义
 tests/
 ├── test-e2e.cjs           # E2E 测试（initialize + tools/list + get_hierarchy）
-└── test-playmode-cycle.cjs # Play Mode 循环测试（进出播放验证 bridge 自动重连）
+├── test-playmode-cycle.cjs # Play Mode 循环测试（进出播放验证 bridge 自动重连）
+└── auto-test-android.ps1  # Android 全流程自动化测试
 ```
 
 ## 故障排查
@@ -276,7 +298,7 @@ Get-Process -Name "node" | Stop-Process -Force
 - MCP SDK v1.x 低阶 API（`setRequestHandler`），不用 `registerTool()`（该 API 在 `connect()` 后抛出异常）
 - WebSocket 通信（`ws` 库），IP/Port 来自 `config.json`
 - 工具通过 `register_tools` 消息从 Bridge 动态注册到 Server，Bridge 重连后自动重新注册
-- Unity Bridge 使用纯 TCP 实现 RFC 6455 WebSocket，零外部依赖
+- Unity Bridge 活动传输为 .NET `ClientWebSocket`（`NetWebSocketClient` 封装，`BridgeClient.ConnectToServer()` 创建）；旧版纯 TCP RFC 6455 实现（`WebSocketClient`）已标记 `[Obsolete]` 仅作参考
 - Server 同时暴露 HTTP `/rpc` 端点用于程序化调用（E2E 测试使用）
 - `/health` 端点返回 bridge 连接状态、工具列表、播放模式状态
 - HTTP `/rpc`、`/sse`、`/mcp` 端点受 `allowedIps` 白名单 gate（403）；WebSocket 升级路径与 `/ab` 不受限
