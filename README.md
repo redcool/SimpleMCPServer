@@ -225,7 +225,7 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 
 - `ip`/`port`：监听地址与端口。本地 `127.0.0.1`，云端 `0.0.0.0`
 - `encryption`/`encryptionKey`：可选 AES-256-CBC 载荷加密（替代 TLS/wss），Server 与 Bridge 配置需一致；空密钥 = 透传
-- `evalEnabled`：`editor.eval` 工具开关（Editor 侧仍有自己的开关，见桥 README）
+- `evalEnabled`：`editor.eval` 工具开关（默认 `true`，以用户方便为先 —— 开发调试/快速原型/补救缺口工具时即时可用）。`false` 时 `tools/list` 不暴露 `editor.eval` 给 agent。**风险**：eval 执行任意 C# = 完全机器控制，任何能调 `/rpc` 的 AI 可执行任意代码（读写文件、删资产、网络访问）；不可信环境（共享机器/公网暴露）务必关闭或扩 `allowedIps` 白名单。Editor 侧另有 `EditorPrefs SimpleMCPBridge_EvalEnabled` 二次 gate，见桥 README「Editor Eval 开关与安全说明」
 - `allowedIps`：**IP 白名单（本版本新增）**——只放行白名单内的客户端调用 HTTP `/rpc`、`/sse`、`/mcp` 端点，其余返回 403；默认 `["127.0.0.1","::1"]` 仅本机；**WebSocket 与 `/ab` 资源端点不受此限制**。配置缺失时自动从 `config.json.template` 复制生成 config.json（首次启动自动创建，见「首次运行」）；**字段缺失/为空数组/非数组时回退到默认 `["127.0.0.1","::1"]`（仅本机）**
 - `llm`：LLM 配置（apiKey 用环境变量 `LLM_API_KEY` 覆盖更安全；config.json 已被 .gitignore 排除，勿提交真实 key）
 
@@ -284,3 +284,4 @@ Get-Process -Name "node" | Stop-Process -Force
 - 服务端每 ~30s ping、超时未 pong 判定失活并 `terminate()` 断连（isAlive 心跳）
 - 日志脱敏：工具名 + 参数长度（不打印明文 payload），错误路径保留详情
 - config.json 不存在时首次启动自动从 template 复制生成；改完配置重启生效
+- 进程级安全网：`uncaughtException` / `unhandledRejection` handler 记日志后继续运行（不崩进程），防单个坏工具响应或未捕获 rejection 带走整个 relay（丢连接 + retryQueue + 在途调用）

@@ -25,3 +25,7 @@ npm-debug.log*
 
 # Config (contains API keys — use config.json.template instead)
 config.json
+/server.err
+/server.log
+/server.out
+/ab-cache
