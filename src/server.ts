@@ -1,4 +1,4 @@
-﻿// ── Main ──
+// ── Main ──
 
 import http from 'http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -24,6 +24,7 @@ import {
   setPlayModeState,
 } from './bridgeState.js';
 import { getMergedTools } from './tools.js';
+import { searchWeb } from './websearch.js';
 import { handleABRequest } from './ab.js';
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
@@ -43,6 +44,15 @@ const retryQueue: Array<{
   bridgeId: string;
 }> = [];
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+// Shared server-side web search (used by both the MCP SDK call path and /rpc).
+async function webSearchToolText(args: Record<string, unknown>): Promise<string> {
+  const query = String(args.query ?? '').trim();
+  if (!query) throw new Error('Missing required argument: query');
+  const max = Math.min(Math.max(Number.parseInt(String(args.maxResults ?? '5'), 10) || 5, 1), 10);
+  const results = await searchWeb(query, max);
+  return JSON.stringify(results, null, 2);
+}
+
 export async function main(): Promise<void> {
   const appCfg = reloadConfig();
 
@@ -87,6 +97,16 @@ export async function main(): Promise<void> {
         return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result) }] };
       } catch (err: any) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    }
+
+    // ── Server-side web search ──
+    if (toolName === 'web.search') {
+      try {
+        const text = await webSearchToolText(args);
+        return { content: [{ type: 'text' as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     }
 
@@ -448,7 +468,7 @@ export async function main(): Promise<void> {
       // IP whitelist (AI-facing endpoint — local-only by default)
       if (!isIpAllowed(req.socket.remoteAddress)) {
         log(`[Server] Rejected /sse from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
-        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Forbidden' }));
         return;
       }
@@ -478,7 +498,7 @@ export async function main(): Promise<void> {
       // IP whitelist (AI-facing endpoint — local-only by default)
       if (!isIpAllowed(req.socket.remoteAddress)) {
         log(`[Server] Rejected /mcp from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
-        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Forbidden' }));
         return;
       }
@@ -486,7 +506,7 @@ export async function main(): Promise<void> {
       const transport = sessionId ? sessions.get(sessionId) : null;
 
       if (!transport) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'SSE session not found. Open GET /sse first.' }));
         return;
       }
@@ -505,7 +525,7 @@ export async function main(): Promise<void> {
           await transport.handlePostMessage(req, res, parsedBody);
         } catch (err: any) {
           if (!res.headersSent) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ error: err.message || 'Invalid request' }));
           }
         }
@@ -518,13 +538,13 @@ export async function main(): Promise<void> {
       // IP whitelist (AI-facing endpoint — local-only by default)
       if (!isIpAllowed(req.socket.remoteAddress)) {
         log(`[Server] Rejected /rpc from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
-        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Forbidden' }));
         return;
       }
       const rpcTimeout = setTimeout(() => {
         if (!res.headersSent) {
-          res.writeHead(408, { 'Content-Type': 'application/json' });
+          res.writeHead(408, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ error: 'Request timed out' }));
         }
       }, 60_000);
@@ -547,12 +567,12 @@ export async function main(): Promise<void> {
             return;
           }
           if (!res.headersSent) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify(response));
           }
         } catch (err: any) {
           if (!res.headersSent) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ error: err.message }));
           }
         }
@@ -580,7 +600,7 @@ export async function main(): Promise<void> {
         connectedFor: Date.now() - info.connectedAt,
         toolNames: info.tools.map(t => t.name),
       }));
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
         status: 'ok',
         totalTools: toolToBridge.size,
@@ -670,6 +690,17 @@ export async function main(): Promise<void> {
           return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
         } catch (err: any) {
           return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err.message } };
+        }
+      }
+
+      // ── Server-side web search ──
+      if (toolName === 'web.search') {
+        try {
+          const text = await webSearchToolText(args);
+          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
+        } catch (err: any) {
+          const reason = err instanceof Error ? err.message : String(err);
+          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: reason } };
         }
       }
 

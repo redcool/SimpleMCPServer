@@ -1,4 +1,4 @@
-﻿import { getCachedConfig } from './config.js';
+import { getCachedConfig } from './config.js';
 import { bridges, toolToBridge } from './bridgeState.js';
 // ── Server-side tools (bridge management) ──
 
@@ -19,6 +19,18 @@ const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Reco
         params: { type: 'object', description: 'Tool parameters (key-value pairs)' },
       },
       required: ['target', 'method'],
+    },
+  },
+  {
+    name: 'web.search',
+    description: 'Search the web (DuckDuckGo, no API key required) and return titles, URLs and snippets',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        maxResults: { type: 'number', description: 'Max results to return (1-10, default 5)', minimum: 1, maximum: 10 },
+      },
+      required: ['query'],
     },
   },
 ];
