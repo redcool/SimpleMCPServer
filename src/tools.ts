@@ -1,5 +1,6 @@
 import { getCachedConfig } from './config.js';
 import { bridges, toolToBridge } from './bridgeState.js';
+import { getAdapterTools, isDangerAdapterTool } from './mcpAdapter.js';
 // ── Server-side tools (bridge management) ──
 
 const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
@@ -39,10 +40,20 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
   const cfg = getCachedConfig();
   const seen = new Set<string>();
   const merged: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [];
-  // Include server-side tools first
+  // Server-side tools first
   for (const tool of SERVER_TOOLS) {
     seen.add(tool.name);
     merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
+  }
+  // External MCP adapter tools (e.g. blender.*) — before bridge tools so the
+  // prefix namespace wins over any bridge tool with a colliding name.
+  for (const tool of getAdapterTools()) {
+    // Code-execution tools hide from listings while evalEnabled=false
+    if (!cfg.evalEnabled && isDangerAdapterTool(tool.name)) continue;
+    if (!seen.has(tool.name)) {
+      seen.add(tool.name);
+      merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
+    }
   }
   // Merge bridge tools (last-registration-wins) — annotate the current routing target
   for (const [_id, info] of [...bridges.entries()].reverse()) {

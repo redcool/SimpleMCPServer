@@ -21,6 +21,9 @@ Unity Editor / Runtime
 - **SimpleMcpServer**（本仓库）— 处理 MCP 协议，注册工具，转发请求到 Unity
 - **SimpleMCPBridge**（[companion repo](https://github.com/redcool/SimpleMCPBridge_Unity)）— 在 Unity 内运行的 WebSocket 客户端，执行场景操作
 
+> **除桥外**，Server 也能作为 **MCP 客户端** 接入外部标准 MCP server（如 BlenderMCP），
+> 把它们的工具以 `<前缀>.<工具名>` 暴露给 AI（如 `blender.get_scene_info`），见「外部 MCP 适配器」。
+
 ## 前置条件
 
 - **Node.js 22+**
@@ -142,6 +145,65 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 | `path` | Transform 路径（如 `"Canvas/Panel/Button"`），跨 domain reload 有效 |
 
 解析优先级：`instanceId` > `path`。`get_hierarchy` 和 `get_objects` 的返回值同时包含两者。
+
+## 外部 MCP 适配器（plan C：接入社区 MCP server）
+
+除了直连自家桥（WebSocket wire protocol），Server 还能作为 **MCP 客户端** 对接外部标准 MCP server，把它们的工具以 `<toolsPrefix>.<工具名>` 暴露给 AI。社区生态（BlenderMCP、UE MCP 等）无需重写桥即可接入，且与桥工具**并存**（`/rpc` 与 `/mcp` 均可用）。
+
+配置（`config.json` 的 `mcpServers` 段，改后重启生效）：
+
+```json
+"mcpServers": [
+  { "name": "blender", "command": "uvx", "args": ["blender-mcp@1.9.1"], "toolsPrefix": "blender" }
+]
+```
+
+- `command` / `args` — 以 stdio 启动外部 MCP server（推荐 pin 具体版本，防上游漂移）
+- 生命周期：服务器启动时 spawn 并 `tools/list` 拉取工具表；子进程退出后按 **10s→30s→60s→120s 指数退避自动重连**（外部应用如 Blender 重启后无需重启本 Server）
+- 工具名冲突时 adapter 优先（先于桥工具合并）
+- **危险工具门**：名字以 `.execute_*` 结尾的任意代码执行类工具（如 `blender.execute_blender_code`）与内置 `editor.eval` 同策略——`evalEnabled=false` 时**列表隐藏 + 调用拒绝**
+- MCP `image` 块返回（如视口截图）自动落盘到 `mcp-media/` 并返回路径，不塞进文本
+
+### 接入步骤（以 Blender 为例）
+
+> 适配层对接的是社区 **BlenderMCP**（ahujasid/blender-mcp，v1.9.1 实测）。对外部用户来说：AI 客户端接本 Server（MCP），Server 接 Blender（经 blender-mcp），全程只需两步安装 + 配一行配置。
+
+**① Blender 侧——安装 MCP addon（一次性，需在本机装过 `uvx`/`uv`）**
+
+```bash
+uvx blender-mcp install-addon    # 写入 %APPDATA%\Blender Foundation\Blender\<版本>\scripts\addons\
+```
+
+**② Server 侧——`config.json` 配 `mcpServers`（本仓库已内置 `config.json.template` 示例）**
+
+```json
+"mcpServers": [
+  { "name": "blender", "command": "uvx", "args": ["blender-mcp@1.9.1"], "toolsPrefix": "blender" }
+]
+```
+
+> 版本一致性：addon 与 `blender-mcp` 的版本建议一致（协议握手 `ADDON_PROTOCOL_VERSION` 校验，不一致连接会失败）。
+
+**③ 启动 Blender 窗口实例**（addon 启用即自动起 socket，`tools/list` 即出现 `blender.*`；推荐加 Blender startup 脚本免手动开启，见 SESSION_MEMORY/AGENTS 相关记录）。
+
+**④ 验证**
+
+```bash
+# /rpc tools/list 应见 blender.* 工具
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"blender.get_scene_info","arguments":{"user_prompt":""}}}
+```
+
+链路（实测通过，2026-09）：`AI → Server(adapter) → uvx blender-mcp(stdio) → TCP 9876 → Blender addon → bpy`。实测全流程：建低多边形树（建模 → smart_project UV → 平滑 + Principled 材质 → 视口截图落盘 `mcp-media/`）可用。
+
+### 安全须知（Blender 接入必读）
+
+1. **`blender.execute_blender_code` = 任意代码执行**：可在 Blender 内运行任何 Python（含 `os`/文件/网络）。它受 `evalEnabled` 门控（`config.json`）：置 `false` 后该工具从列表消失且调用被拒。**仅在可信环境开启**。
+2. **addon socket 仅监听本机回环**：`BlenderMCPServer` 默认 `bind localhost:9876`，不暴露局域网——**不要**改 host 为 `0.0.0.0` 或做端口转发，否则局域网内的 MCP 客户端可直连你的 Blender。
+3. **遥测默认开启**：BlenderMCP 的 `Allow Telemetry` 偏好**默认勾选**，收集 prompt/代码/截图/轨迹数据。关闭：Blender 偏好面板「MCP for Blender」取消勾选，或调用 `blender.disable_telemetry` 工具。
+4. **供应链**：`blender-mcp` 建议 pin 版本（示例已 pin `@1.9.1`），addon 同样按该版本安装，避免上游意外更新破坏行为。
+5. **权限边界**：AI 对 Blender 的操作 = Blender 进程所属用户的权限（可读写本机文件、调网络）。等同于把"本机 Python 执行权"交给 AI。
+6. **退出接入**：删掉/注释 `mcpServers` 块，或在条目内加 `"enabled": false`，重启 Server 即断开（不卸载 Blender 侧任何东西）。
+7. **已知坑**：Blender 中文界面下默认对象名是本地化的（如 `primitive_cube_add` 生成 "立方体" 而非 "Cube.001"），脚本建议显式 `o.name=...`；经 PowerShell 传中文参数需显式 UTF-8 编码。
 
 ## 可用工具
 

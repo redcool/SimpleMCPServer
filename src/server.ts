@@ -26,6 +26,7 @@ import {
 import { getMergedTools } from './tools.js';
 import { searchWeb } from './websearch.js';
 import { handleABRequest } from './ab.js';
+import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool } from './mcpAdapter.js';
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
@@ -126,6 +127,26 @@ export async function main(): Promise<void> {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: 'editor.eval is disabled (evalEnabled=false)' }) }],
         isError: true,
       };
+    }
+
+    // ── External MCP adapter tools (e.g. blender.*) — proxy to the adapter's server ──
+    if (isAdapterTool(toolName)) {
+      // Code-execution tools respect evalEnabled on execution too
+      if (isDangerAdapterTool(toolName) && !getCachedConfig().evalEnabled) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'code-execution tool is disabled (evalEnabled=false)' }) }],
+          isError: true,
+        };
+      }
+      try {
+        const text = await callAdapterTool(toolName, args);
+        return { content: [{ type: 'text' as const, text }] };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }],
+          isError: true,
+        };
+      }
     }
 
     // ── Bridge-registered tools ──
@@ -762,6 +783,20 @@ export async function main(): Promise<void> {
         return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'editor.eval is disabled (evalEnabled=false)' } };
       }
 
+      // ── External MCP adapter tools (e.g. blender.*) — proxy to the adapter's server ──
+      if (isAdapterTool(toolName)) {
+        // Code-execution tools respect evalEnabled on execution too
+        if (isDangerAdapterTool(toolName) && !getCachedConfig().evalEnabled) {
+          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'code-execution tool is disabled (evalEnabled=false)' } };
+        }
+        try {
+          const text = await callAdapterTool(toolName, args);
+          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
+        } catch (err: any) {
+          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err?.message ?? String(err) } };
+        }
+      }
+
       // ── Bridge-registered tools ──
       const bridgeId = toolToBridge.get(toolName);
       if (!bridgeId) {
@@ -791,6 +826,9 @@ export async function main(): Promise<void> {
     return { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } };
   }
 
+  // ── Start external MCP adapters (BlenderMCP etc.) — non-fatal on failure ──
+  await startAdapters(appCfg.mcpServers);
+
   // ── Start listening ──
   httpServer.on('error', (err: Error) => {
     log('[Server] Listen error:', err.message);
@@ -808,6 +846,7 @@ export async function main(): Promise<void> {
     log(`[Server] AssetBundle→ POST /ab?name=<file> (upload) | GET /ab/<file> (download)`);
     log(`[Server] Payload encryption: ${appCfg.encryption && appCfg.encryptionKey ? 'enabled (AES-256-CBC)' : 'disabled'} (config.encryption=${appCfg.encryption})`);
     log(`[Server] eval tools: ${appCfg.evalEnabled ? 'enabled' : 'disabled'}`);
+    log(`[Server] External MCP adapters: ${appCfg.mcpServers.length ? appCfg.mcpServers.map(s => s.name).join(', ') : 'none'}`);
     log(`[Server] Bridge     → ws://${appCfg.ip}:${appCfg.port}/ (WebSocket)`);
     const llmCfg = appCfg.llm;
     if (!llmCfg.enabled) {
@@ -827,7 +866,9 @@ export async function main(): Promise<void> {
     for (const [_id, info] of bridges) {
       info.ws.close();
     }
-    httpServer.close();
+    stopAdapters().then(() => httpServer.close());
+    // Close http after adapters stop (avoid dangling child procs); accept tiny delay
+    setTimeout(() => httpServer.close(), 200);
     process.exit(0);
   };
   process.on('SIGINT', cleanup);

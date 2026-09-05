@@ -27,5 +27,9 @@ npm-debug.log*
 config.json
 /server.err
 /server.log
+/server.log.*
 /server.out
 /ab-cache
+
+# MCP adapter runtime media (screenshots from external MCP servers e.g. Blender)
+/mcp-media

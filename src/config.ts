@@ -1,4 +1,4 @@
-﻿import { readFileSync, existsSync, copyFileSync } from 'fs';
+import { readFileSync, existsSync, copyFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { log } from './logger.js';
@@ -18,6 +18,17 @@ export interface LLMConfig {
   maxTokens: number;
 }
 
+/** One external MCP server this server connects to as an MCP *client* (plan C).
+ *  Its tools are exposed under "<toolsPrefix>.<toolName>" (default prefix = name).
+ *  Example (BlenderMCP): {"name":"blender","command":"uvx","args":["blender-mcp"]} */
+export interface MCPServerConfig {
+  name: string;
+  command: string;
+  args?: string[];
+  enabled?: boolean;
+  toolsPrefix?: string;
+}
+
 export interface AppConfig {
   ip: string;
   port: number;
@@ -28,6 +39,8 @@ export interface AppConfig {
   /** IPs allowed to call the AI-facing HTTP endpoints (/rpc, /sse, /mcp). Default: loopback only. */
   allowedIps: string[];
   llm: LLMConfig;
+  /** External MCP servers (e.g. BlenderMCP) to proxy tools from. */
+  mcpServers: MCPServerConfig[];
 }
 
 let appConfigCache: AppConfig | null = null;
@@ -63,6 +76,7 @@ export function loadAppConfig(): AppConfig {
       maxTokens: 1024,
     },
     abCacheDir: join(process.cwd(), 'ab-cache'),
+    mcpServers: [],
   };
   // ── Auto-create config.json from config.json.template when missing ──
   // Replaces the manual "rename .template" step. config.json is gitignored,
