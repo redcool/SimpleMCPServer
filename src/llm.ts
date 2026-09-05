@@ -1,4 +1,4 @@
-﻿import http from 'http';
+import http from 'http';
 import https from 'https';
 import { getCachedConfig } from './config.js';
 // ── Sanitize API keys in error messages ──
@@ -85,9 +85,19 @@ export function callLLM(req: AIRequestMessage): Promise<string> {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
+  const MAX_LLM_RESPONSE = 10 * 1024 * 1024; // 10MB guard
+
   return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      fn();
+    };
+
     const timeout = setTimeout(() => {
-      reject(new Error('LLM request timed out after 60s'));
+      settle(() => reject(new Error('LLM request timed out after 60s')));
     }, 60_000);
 
     const url = new URL(`${llmCfg.baseUrl}/chat/completions`);
@@ -103,36 +113,42 @@ export function callLLM(req: AIRequestMessage): Promise<string> {
 
     const httpreq = httpModule.request(options, (res: http.IncomingMessage) => {
       let data = '';
-      res.on('data', (chunk: Buffer) => { data += chunk; });
-      res.on('end', () => {
-        clearTimeout(timeout);
-        try {
-          const parsed = JSON.parse(data);
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new Error(`LLM API error ${res.statusCode}: ${sanitizeLLMError(parsed.error?.message || data)}`));
-            return;
-          }
-
-          if (isOllama) {
-            resolve(String(parsed.response || parsed.message?.content || ''));
-            return;
-          }
-
-          const content = parsed.choices?.[0]?.message?.content;
-          if (content) {
-            resolve(content);
-          } else {
-            reject(new Error(`Invalid LLM response: ${sanitizeLLMError(data)}`));
-          }
-        } catch (e) {
-          reject(new Error(`Failed to parse LLM response: ${sanitizeLLMError(data)}`));
+      res.on('data', (chunk: Buffer) => {
+        data += chunk;
+        if (data.length > MAX_LLM_RESPONSE) {
+          settle(() => reject(new Error('LLM response too large (limit 10MB)')));
+          res.destroy();
         }
+      });
+      res.on('end', () => {
+        settle(() => {
+          try {
+            const parsed = JSON.parse(data);
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(new Error(`LLM API error ${res.statusCode}: ${sanitizeLLMError(parsed.error?.message || data)}`));
+              return;
+            }
+
+            if (isOllama) {
+              resolve(String(parsed.response || parsed.message?.content || ''));
+              return;
+            }
+
+            const content = parsed.choices?.[0]?.message?.content;
+            if (content) {
+              resolve(content);
+            } else {
+              reject(new Error(`Invalid LLM response: ${sanitizeLLMError(data)}`));
+            }
+          } catch (e) {
+            reject(new Error(`Failed to parse LLM response: ${sanitizeLLMError(data)}`));
+          }
+        });
       });
     });
 
     httpreq.on('error', (e: Error) => {
-      clearTimeout(timeout);
-      reject(new Error(`LLM request failed: ${e.message}`));
+      settle(() => reject(new Error(`LLM request failed: ${e.message}`)));
     });
 
     httpreq.write(bodyStr);

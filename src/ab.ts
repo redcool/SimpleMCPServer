@@ -1,8 +1,8 @@
-﻿import http from 'http';
+import http from 'http';
 import * as os from 'os';
 import { join } from 'path';
 import { existsSync, statSync, mkdirSync, copyFileSync, createWriteStream, createReadStream, unlinkSync } from 'fs';
-import { getCachedConfig } from './config.js';
+import { getCachedConfig, isIpAllowed } from './config.js';
 import { log } from './logger.js';
 import { bridges } from './bridgeState.js';
 
@@ -67,6 +67,12 @@ function sameSubnet(a: string, b: string, mask: string): boolean {
  *   GET  /ab/<file>        streams the file back. Used by shader.hot_replace (runtime bridge).
  */
 export async function handleABRequest(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+      // IP whitelist — /ab reads/writes files on this machine (default: loopback only).
+      if (!isIpAllowed(req.socket.remoteAddress)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
       const abDir = getCachedConfig().abCacheDir || join(process.cwd(), 'ab-cache');
 
       // GET /ab/<file> — download
@@ -114,6 +120,15 @@ export async function handleABRequest(req: http.IncomingMessage, res: http.Serve
         // If not (cross-PC), tell the bridge to stream-upload instead.
         const localpath = url.searchParams.get('localpath');
         if (localpath) {
+          // localpath copies a file directly off this server's disk — only valid
+          // from the same machine (cross-PC bridges must stream-upload instead).
+          const peer = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+          if (peer !== '127.0.0.1' && peer !== '::1') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, code: 'local_unavailable' }));
+            req.resume();
+            return;
+          }
           let lp = localpath;
           try { lp = decodeURIComponent(localpath); } catch {}
           let handled = false;

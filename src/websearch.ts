@@ -134,7 +134,24 @@ function dedupe(results: WebSearchResult[]): WebSearchResult[] {
   });
 }
 
+/** Serialize searches: only one outbound search runs at a time (DDG/Bing have
+ *  aggressive rate limits; concurrent bursts trigger challenge pages). */
+let searchTail: Promise<unknown> = Promise.resolve();
+
 export async function searchWeb(query: string, maxResults = 5): Promise<WebSearchResult[]> {
+  const run = () => searchWebSerialized(query, maxResults);
+  const prev = searchTail;
+  let release!: () => void;
+  searchTail = new Promise<void>((r) => { release = r; });
+  await prev.catch(() => {});
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
+async function searchWebSerialized(query: string, maxResults = 5): Promise<WebSearchResult[]> {
   const q = query.trim();
   if (!q) throw new Error('query is required');
 
@@ -149,7 +166,7 @@ export async function searchWeb(query: string, maxResults = 5): Promise<WebSearc
     try {
       const results = dedupe(await p.run());
       if (results.length > 0) {
-        log(`[Server] web.search: query="${q.slice(0, 80)}" → ${results.length} result(s) via ${p.name}`);
+        log(`[Server] web.search: query="${q.slice(0, 80).replace(/[\r\n"]/g, ' ')}" → ${results.length} result(s) via ${p.name}`);
         return results.slice(0, maxResults);
       }
       errors.push(`${p.name}: 0 results`);

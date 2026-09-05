@@ -49,7 +49,13 @@ async function webSearchToolText(args: Record<string, unknown>): Promise<string>
   const query = String(args.query ?? '').trim();
   if (!query) throw new Error('Missing required argument: query');
   const max = Math.min(Math.max(Number.parseInt(String(args.maxResults ?? '5'), 10) || 5, 1), 10);
-  const results = await searchWeb(query, max);
+  // Overall guard on top of the per-provider timeouts (3 × 15s worst case).
+  const results = await Promise.race([
+    searchWeb(query, max),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('web search timed out (25s)')), 25_000);
+    }),
+  ]);
   return JSON.stringify(results, null, 2);
 }
 
@@ -92,6 +98,10 @@ export async function main(): Promise<void> {
       const params = (args.params || {}) as Record<string, unknown>;
       if (!target) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Missing required argument: target (bridgeId)' }) }], isError: true };
       if (!method) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Missing required argument: method (tool name)' }) }], isError: true };
+      // evalEnabled applies on execution too — bridge.call must not bypass the gate
+      if (method === 'editor.eval' && !getCachedConfig().evalEnabled) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'editor.eval is disabled (evalEnabled=false)' }) }], isError: true };
+      }
       try {
         const result = await callBridgeById(target, method, params);
         return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result) }] };
@@ -108,6 +118,14 @@ export async function main(): Promise<void> {
       } catch (err: any) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message }) }], isError: true };
       }
+    }
+
+    // ── Enforce evalEnabled on execution too (listing filter is not a gate) ──
+    if (toolName === 'editor.eval' && !getCachedConfig().evalEnabled) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'editor.eval is disabled (evalEnabled=false)' }) }],
+        isError: true,
+      };
     }
 
     // ── Bridge-registered tools ──
@@ -167,6 +185,13 @@ export async function main(): Promise<void> {
   }, 30_000);
 
   wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+    // IP whitelist — a rogue WS client could hijack bridge routing or trigger
+    // paid LLM calls, so the bridge channel is restricted to allowed IPs too.
+    if (!isIpAllowed(req.socket.remoteAddress)) {
+      log(`[Server] Rejected bridge WebSocket from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
+      ws.close(1008, 'Forbidden — IP not in allowedIps');
+      return;
+    }
     const aliveWs = ws as AliveWebSocket;
     aliveWs.isAlive = true;
     aliveWs.clientIp = req.socket.remoteAddress || 'unknown';
@@ -267,7 +292,10 @@ export async function main(): Promise<void> {
           const queue = [...retryQueue];
           retryQueue.length = 0;
           for (const entry of queue) {
-            callBridge(entry.method, entry.params)
+            // Replay to the ORIGINAL bridge, not whatever bridge last took over
+            // the tool name — otherwise a call meant for project A can silently
+            // be routed to project B's bridge that reconnected first.
+            callBridgeById(entry.bridgeId, entry.method, entry.params)
               .then(entry.resolve)
               .catch(entry.reject);
           }
@@ -279,7 +307,8 @@ export async function main(): Promise<void> {
       // ── AI Request from Bridge ──
       if (msg.type === 'ai_request') {
         const requestId = msg.requestId || `ai_${Date.now()}`;
-        log(`[Server] AI request: ${requestId}, prompt: ${String(msg.prompt || '').slice(0, 80)}`);
+        const safePrompt = String(msg.prompt || '').slice(0, 80).replace(/[\r\n"]/g, ' ');
+        log(`[Server] AI request: ${requestId}, prompt: ${safePrompt}`);
 
         const llmCfg = getCachedConfig().llm;
         if (!llmCfg.enabled) {
@@ -460,7 +489,22 @@ export async function main(): Promise<void> {
   wss.on('error', (err: Error) => log('[Server] WebSocket error:', err.message));
 
   // ── HTTP request routing ──
-  httpServer.on('request', async (req: http.IncomingMessage, res: http.ServerResponse) => {
+  // ── HTTP routing — wrapped so any unexpected throw answers 500 instead of hanging ──
+  httpServer.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
+    handleHttpRequest(req, res).catch((err: unknown) => {
+      log('[Server] HTTP handler error:', err instanceof Error ? err.message : String(err));
+      if (!res.headersSent) {
+        try {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Internal error' }));
+        } catch { /* socket already gone */ }
+      } else {
+        try { res.end(); } catch { /* ignore */ }
+      }
+    });
+  });
+
+  async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url!, `http://${req.headers.host}`);
 
     // ── MCP SSE endpoint (GET) — agent establishes SSE stream ──
@@ -590,6 +634,11 @@ export async function main(): Promise<void> {
 
     // ── Health check ──
     if (req.method === 'GET' && url.pathname === '/health') {
+      if (!isIpAllowed(req.socket.remoteAddress)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
       const llmCfg = loadAppConfig().llm;
       const bridgeList = [...bridges.entries()].map(([id, info]) => ({
         id,
@@ -620,7 +669,7 @@ export async function main(): Promise<void> {
 
     res.writeHead(404);
     res.end('Not found — use GET /sse for MCP, POST /rpc for direct JSON-RPC, GET /health for status');
-  });
+  }
 
   // ── Direct JSON-RPC handler (bypasses SSE, for tests) ──
   let isInitialized = false;
@@ -684,6 +733,10 @@ export async function main(): Promise<void> {
         const params = (args.params || {}) as Record<string, unknown>;
         if (!target) return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Missing required argument: target (bridgeId)' } };
         if (!method) return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Missing required argument: method (tool name)' } };
+        // evalEnabled applies on execution too — bridge.call must not bypass the gate
+        if (method === 'editor.eval' && !getCachedConfig().evalEnabled) {
+          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'editor.eval is disabled (evalEnabled=false)' } };
+        }
         try {
           const result = await callBridgeById(target, method, params);
           const text = typeof result === 'string' ? result : JSON.stringify(result);
@@ -702,6 +755,11 @@ export async function main(): Promise<void> {
           const reason = err instanceof Error ? err.message : String(err);
           return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: reason } };
         }
+      }
+
+      // ── Enforce evalEnabled on execution too (listing filter is not a gate) ──
+      if (toolName === 'editor.eval' && !getCachedConfig().evalEnabled) {
+        return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'editor.eval is disabled (evalEnabled=false)' } };
       }
 
       // ── Bridge-registered tools ──
@@ -734,6 +792,13 @@ export async function main(): Promise<void> {
   }
 
   // ── Start listening ──
+  httpServer.on('error', (err: Error) => {
+    log('[Server] Listen error:', err.message);
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      log(`[Server] Port ${appCfg.port} already in use — is another server instance already running?`);
+    }
+    process.exit(1);
+  });
   httpServer.listen(appCfg.port, appCfg.ip, () => {
     log(`[Server] Ready at http://${appCfg.ip}:${appCfg.port}/`);
     log(`[Server] Agent SSE  → GET  /sse  (SSE stream for MCP)`);

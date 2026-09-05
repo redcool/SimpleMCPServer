@@ -1,4 +1,4 @@
-﻿import { join, dirname } from 'path';
+import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // AND the server.log file (for persistence).
 // Format: [Beijing-time] [TAG] message
 // Change this single function to redirect logs or add log levels.
-import { appendFileSync } from 'fs';
+import { appendFileSync, existsSync, statSync, renameSync } from 'fs';
 
 const _consoleError = console.error.bind(console);
 
@@ -31,10 +31,14 @@ export function log(message: string, ...extra: any[]) {
     _consoleError(formatted, ...extra);
   }
 
-  // Also append to server.log (flush immediately)
+  // Also append to server.log (flush immediately), rotating past 8MB
   try {
     const extraStr = extra.length > 0 ? ' ' + extra.map(e => String(e)).join(' ') : '';
     const logFile = join(__dirname, '..', 'server.log');
+    const MAX_LOG = 8 * 1024 * 1024;
+    if (existsSync(logFile) && statSync(logFile).size > MAX_LOG) {
+      renameSync(logFile, logFile + '.1');
+    }
     appendFileSync(logFile, formatted + extraStr + '\n', 'utf-8');
   } catch { /* best-effort */ }
 }
