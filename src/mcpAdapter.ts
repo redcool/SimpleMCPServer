@@ -91,7 +91,7 @@ async function startOne(cfg: MCPServerConfig): Promise<void> {
   const transport = new StdioClientTransport({
     command: cfg.command,
     args: cfg.args ?? [],
-    env: { ...(process.env as Record<string, string>) },
+    env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
     stderr: 'pipe' as const,
   });
   // Attach before start() so early stderr output is not lost.

@@ -20,11 +20,14 @@ export interface LLMConfig {
 
 /** One external MCP server this server connects to as an MCP *client* (plan C).
  *  Its tools are exposed under "<toolsPrefix>.<toolName>" (default prefix = name).
- *  Example (BlenderMCP): {"name":"blender","command":"uvx","args":["blender-mcp"]} */
+ *  Example (BlenderMCP): {"name":"blender","command":"uvx","args":["blender-mcp"]}
+ *  env: merged over the server's own environment (e.g. {"BLENDER_PORT":"9877"} to
+ *  point a second blender-mcp instance at a different Blender socket). */
 export interface MCPServerConfig {
   name: string;
   command: string;
   args?: string[];
+  env?: Record<string, string>;
   enabled?: boolean;
   toolsPrefix?: string;
 }

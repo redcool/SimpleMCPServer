@@ -158,6 +158,17 @@ Unity 侧的场景工具同时支持两种方式定位 GameObject：
 ]
 ```
 
+`mcpServers` 条目字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | ✅ | 适配器名（进程名/日志/去重 key） |
+| `command` | ✅ | 启动外部 MCP server 的命令（如 `uvx` 的绝对路径；PATH 里可直接写 `uvx`） |
+| `args` | 可选 | 命令行参数（推荐 pin 版本，如 `["blender-mcp@1.9.1"]`） |
+| `env` | 可选 | 注入给子进程的额外环境变量（如 `{"BLENDER_PORT":"9877"}` 指向第二个 Blender 实例） |
+| `toolsPrefix` | 可选 | 工具前缀，默认 = `name`（工具以 `<前缀>.<工具名>` 暴露） |
+| `enabled` | 可选 | `false` = 不启动该适配器（免删条目临时下线） |
+
 - `command` / `args` — 以 stdio 启动外部 MCP server（推荐 pin 具体版本，防上游漂移）
 - 生命周期：服务器启动时 spawn 并 `tools/list` 拉取工具表；子进程退出后按 **10s→30s→60s→120s 指数退避自动重连**（外部应用如 Blender 重启后无需重启本 Server）
 - 工具名冲突时 adapter 优先（先于桥工具合并）
@@ -184,7 +195,11 @@ uvx blender-mcp install-addon    # 写入 %APPDATA%\Blender Foundation\Blender\<
 
 > 版本一致性：addon 与 `blender-mcp` 的版本建议一致（协议握手 `ADDON_PROTOCOL_VERSION` 校验，不一致连接会失败）。
 
-**③ 启动 Blender 窗口实例**（addon 启用即自动起 socket，`tools/list` 即出现 `blender.*`；推荐加 Blender startup 脚本免手动开启，见 SESSION_MEMORY/AGENTS 相关记录）。
+**③ 启动 Blender 窗口实例**：addon 的 `Auto-Start Server` 选项默认开启——**在任何 Blender 窗口的偏好设置里启用一次 addon**（保存偏好）后，该实例每次启动都会自动启用 addon 并自动起 socket（默认端口 9876）。如需全自动（首次启用也不用手点），可在 Blender 用户目录 `scripts/startup/` 放一个 `addon_utils.enable` 的小脚本（团队环境做法见 AGENTS.md 相关记录）。本仓库提供了多实例启动脚本：
+
+```powershell
+pwsh scripts\start-blender-instance.ps1 -Instance 1
+```
 
 **④ 验证**
 
@@ -194,6 +209,31 @@ uvx blender-mcp install-addon    # 写入 %APPDATA%\Blender Foundation\Blender\<
 ```
 
 链路（实测通过，2026-09）：`AI → Server(adapter) → uvx blender-mcp(stdio) → TCP 9876 → Blender addon → bpy`。实测全流程：建低多边形树（建模 → smart_project UV → 平滑 + Principled 材质 → 视口截图落盘 `mcp-media/`）可用。
+
+### 多 Blender 实例（同时开多个窗口，各自独立控制）
+
+原理：**每个实例 = 独立 socket 端口 + 独立的 blender-mcp 进程**（适配层本来就按 mcpServers 条目逐条 spawn）+ 独立工具前缀。端口分配：实例 N → `9875+N`（实例1=9876，实例2=9877…）。
+
+1. **起实例**（脚本注入 `BLENDER_MCP_PORT` 环境变量；Blender 的 startup 脚本 `blender_mcp_auto.py` 据此用对应端口起 addon socket）：
+
+```powershell
+pwsh scripts\start-blender-instance.ps1 -Instance 2        # 第 2 个窗口 → 端口 9877
+pwsh scripts\start-blender-instance.ps1 -Instance 2 -BlendFile D:\proj\a.blend
+```
+
+2. **config.json 每条实例加一条 mcpServers**（`env.BLENDER_PORT` 与实例端口对应）：
+
+```json
+"mcpServers": [
+  { "name": "blender",  "command": "<uvx>", "args": ["blender-mcp@1.9.1"], "toolsPrefix": "blender" },
+  { "name": "blender2", "command": "<uvx>", "args": ["blender-mcp@1.9.1"],
+    "env": { "BLENDER_PORT": "9877" }, "toolsPrefix": "blender2" }
+]
+```
+
+3. 重启 Server → `tools/list` 同时出现 `blender.*` 与 `blender2.*`，调用完全隔离（各自查/改的是对应窗口的场景）。
+
+> 补充：同一实例内切换 .blend **工程**不需要任何配置——socket 是进程级的，agent 看到的就是该窗口当前打开的工程。
 
 ### 安全须知（Blender 接入必读）
 
