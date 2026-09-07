@@ -127,6 +127,16 @@ start-quick.bat
 }
 ```
 
+#### 支持的传输端点
+
+| 传输 | 端点 | 说明 |
+|------|------|------|
+| **Streamable HTTP（推荐）** | `GET/POST /mcp-stream` | MCP 2025-11 规范推荐传输（GET=SSE 事件流 + POST=JSON-RPC），新客户端优先用这个 |
+| SSE（legacy） | `GET /sse` + `POST /mcp?sessionId=...` | 旧版 MCP SSE 传输，为兼容旧客户端保留 |
+| 直接 JSON-RPC | `POST /rpc` | 非 MCP 会话协议，供脚本/测试直接用（如 autobot） |
+
+AI 代理若走网络连接本 Server（非 stdio），`url` 填 `http://<host>:45678/mcp-stream`（推荐）或 `/sse`。
+
 ### 4. 验证连通性
 
 ```bash

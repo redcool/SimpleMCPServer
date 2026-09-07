@@ -1,8 +1,10 @@
 // ── Main ──
 
 import http from 'http';
+import { randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { log } from './logger.js';
@@ -63,11 +65,14 @@ async function webSearchToolText(args: Record<string, unknown>): Promise<string>
 export async function main(): Promise<void> {
   const appCfg = reloadConfig();
 
-  // ── MCP Server (protocol handlers: tools/list, tools/call) ──
-  const server = new Server(
-    { name: 'unity-mcp-server', version: '0.1.0' },
-    { capabilities: { tools: {} } },
-  );
+  // ── MCP Server factory: one instance per connected transport ──
+  // The MCP SDK allows ONE transport per Protocol instance, so each session
+  // (SSE or Streamable HTTP) gets its own Server; shared state stays module-level.
+  function createMcpServer(): Server {
+    const server = new Server(
+      { name: 'unity-mcp-server', version: '0.1.0' },
+      { capabilities: { tools: {} } },
+    );
 
   // ── Tool listing: merge all bridges' tools (dedup by name, last-wins) ──
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -176,8 +181,15 @@ export async function main(): Promise<void> {
     }
   });
 
+  return server;
+  }
+
   // ── SSE transport sessions (one per connected agent) ──
-  const sessions = new Map<string, SSEServerTransport>();
+  // Each entry keeps its own protocol Server instance (SDK: 1 transport/Protocol).
+  const sessions = new Map<string, { transport: SSEServerTransport; server: Server }>();
+  // Streamable HTTP (MCP 2025-11 recommended transport) sessions — independent
+  // session pool, path /mcp-stream.
+  const streamSessions = new Map<string, { transport: StreamableHTTPServerTransport; server: Server }>();
 
   // ── HTTP + WebSocket Server (single port, plain ws://) ──
   // Encryption is done at the payload level (see encryptPayload/decryptPayload)
@@ -538,7 +550,8 @@ export async function main(): Promise<void> {
         return;
       }
       const transport = new SSEServerTransport('/mcp', res);
-      sessions.set(transport.sessionId, transport);
+      const srv = createMcpServer();
+      sessions.set(transport.sessionId, { transport, server: srv });
       log(`[Server] SSE session started: ${transport.sessionId}`);
 
       transport.onclose = () => {
@@ -547,7 +560,7 @@ export async function main(): Promise<void> {
       };
 
       try {
-        await server.connect(transport);
+        await srv.connect(transport);
       } catch (err: any) {
         log('[Server] SSE connect error:', err.message);
         if (!res.headersSent) {
@@ -555,6 +568,74 @@ export async function main(): Promise<void> {
           res.end('Internal error');
         }
       }
+      return;
+    }
+
+    // ── MCP Streamable HTTP endpoint (MCP 2025-11 recommended transport) ──
+    // GET  = SSE stream (create/re-attach session, waits for initialize)
+    // POST = JSON-RPC message (with mcp-session-id header, or stateless initialize)
+    if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/mcp-stream') {
+      if (!isIpAllowed(req.socket.remoteAddress)) {
+        log(`[Server] Rejected /mcp-stream from ${req.socket.remoteAddress || 'unknown'} (not in allowedIps)`);
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
+      const sessionHeader = req.headers['mcp-session-id'];
+      const sessionId = typeof sessionHeader === 'string' ? sessionHeader : undefined;
+      const existing = sessionId ? streamSessions.get(sessionId) : undefined;
+      if (sessionId && !existing) {
+        res.writeHead(404, {
+          'Content-Type': 'application/json',
+          'mcp-session-id': sessionId,
+        });
+        res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Session not found' } }));
+        return;
+      }
+      let body = '';
+      req.on('data', (chunk: Buffer) => {
+        body += chunk;
+        if (body.length > MAX_BODY_SIZE) {
+          req.destroy(new Error('Request body too large'));
+          return;
+        }
+      });
+      req.on('end', async () => {
+        try {
+          let t = existing?.transport;
+          let srv = existing?.server;
+          if (!t) {
+            t = new StreamableHTTPServerTransport({
+              sessionIdGenerator: () => randomUUID(),
+              // Lazy: the real session id is only generated when the first
+              // request (initialize) is handled, so register it here.
+              onsessioninitialized: (sid) => {
+                log(`[Server] Streamable session initialized: ${sid}`);
+                if (t && srv) streamSessions.set(sid, { transport: t, server: srv });
+              },
+            });
+            srv = createMcpServer();
+            log('[Server] Streamable transport created (session id pending)');
+            t.onclose = () => {
+              const sid = t!.sessionId;
+              if (sid) streamSessions.delete(sid);
+              log(`[Server] Streamable transport closed: ${sid ?? '(no session)'}`);
+            };
+            await srv.connect(t);
+          }
+          const parsedBody = body ? JSON.parse(body) : undefined;
+          await t.handleRequest(req, res, parsedBody);
+          // Register under the real session id once known (generated lazily
+          // during initialize), so follow-up POSTs with the header resolve.
+          const realSid = t.sessionId;
+          if (realSid) streamSessions.set(realSid, { transport: t, server: srv! });
+        } catch (err: any) {
+          if (!res.headersSent) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: err?.message || 'Invalid request' }));
+          }
+        }
+      });
       return;
     }
 
@@ -568,9 +649,9 @@ export async function main(): Promise<void> {
         return;
       }
       const sessionId = url.searchParams.get('sessionId');
-      const transport = sessionId ? sessions.get(sessionId) : null;
+      const sess = sessionId ? sessions.get(sessionId) : undefined;
 
-      if (!transport) {
+      if (!sess) {
         res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'SSE session not found. Open GET /sse first.' }));
         return;
@@ -587,7 +668,7 @@ export async function main(): Promise<void> {
       req.on('end', async () => {
         try {
           const parsedBody = body ? JSON.parse(body) : undefined;
-          await transport.handlePostMessage(req, res, parsedBody);
+          await sess.transport.handlePostMessage(req, res, parsedBody);
         } catch (err: any) {
           if (!res.headersSent) {
             res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -839,8 +920,9 @@ export async function main(): Promise<void> {
   });
   httpServer.listen(appCfg.port, appCfg.ip, () => {
     log(`[Server] Ready at http://${appCfg.ip}:${appCfg.port}/`);
-    log(`[Server] Agent SSE  → GET  /sse  (SSE stream for MCP)`);
-    log(`[Server] Agent POST → POST /mcp  (send JSON-RPC messages)`);
+    log(`[Server] Agent SSE  → GET  /sse  (SSE stream for MCP, legacy)`);
+    log(`[Server] Agent MCP  → GET/POST /mcp-stream  (Streamable HTTP, recommended)`);
+    log(`[Server] Agent POST → POST /mcp  (SSE session messages)`);
     log(`[Server] Scripts    → POST /rpc  (direct JSON-RPC, no SSE needed)`);
     log(`[Server] Health     → GET  /health`);
     log(`[Server] AssetBundle→ POST /ab?name=<file> (upload) | GET /ab/<file> (download)`);
