@@ -21,5 +21,18 @@
             "args": ["blender-mcp@1.9.1"],
             "toolsPrefix": "blender"
         }
-    ]
+    ],
+    "webSearch": {
+        "order": ["serper", "google", "bing", "ddg-html", "ddg-lite"],
+        "region": "zh-CN",
+        "serper": {
+            "apiKey": ""
+        },
+        "google": {
+            "apiKey": "",
+            "cx": ""
+        },
+        "providerTimeoutMs": 15000,
+        "cooldownMs": 60000
+    }
 }

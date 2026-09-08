@@ -344,15 +344,30 @@ pwsh scripts\start-blender-instance.ps1 -Instance 2 -BlendFile D:\proj\a.blend
     "encryption": false,
     "evalEnabled": true,
     "allowedIps": ["127.0.0.1", "::1"],
-    "llm": { "enabled": true, "provider": "agnes", "baseUrl": "https://apihub.agnes-ai.com/v1", "apiKey": "YOUR_API_KEY_HERE", "model": "agnes-2.0-flash", "temperature": 0.7, "maxTokens": 1024 }
+    "llm": { "enabled": true, "provider": "agnes", "baseUrl": "https://apihub.agnes-ai.com/v1", "apiKey": "YOUR_API_KEY_HERE", "model": "agnes-2.0-flash", "temperature": 0.7, "maxTokens": 1024 },
+    "webSearch": {
+        "order": ["serper", "google", "bing", "ddg-html", "ddg-lite"],
+        "region": "zh-CN",
+        "serper": { "apiKey": "" },
+        "google": { "apiKey": "", "cx": "" },
+        "providerTimeoutMs": 15000,
+        "cooldownMs": 60000
+    }
 }
 ```
 
 - `ip`/`port`：监听地址与端口。本地 `127.0.0.1`，云端 `0.0.0.0`
 - `encryption`/`encryptionKey`：可选 AES-256-CBC 载荷加密（替代 TLS/wss），Server 与 Bridge 配置需一致；空密钥 = 透传
 - `evalEnabled`：`editor.eval` 工具开关（默认 `true`，以用户方便为先 —— 开发调试/快速原型/补救缺口工具时即时可用）。`false` 时 `tools/list` 不暴露 `editor.eval` 给 agent。**风险**：eval 执行任意 C# = 完全机器控制，任何能调 `/rpc` 的 AI 可执行任意代码（读写文件、删资产、网络访问）；不可信环境（共享机器/公网暴露）务必关闭或扩 `allowedIps` 白名单。Editor 侧另有 `EditorPrefs SimpleMCPBridge_EvalEnabled` 二次 gate，见桥 README「Editor Eval 开关与安全说明」
-- `allowedIps`：**IP 白名单（本版本新增）**——只放行白名单内的客户端调用 HTTP `/rpc`、`/sse`、`/mcp` 端点，其余返回 403；默认 `["127.0.0.1","::1"]` 仅本机；**WebSocket 与 `/ab` 资源端点不受此限制**。配置缺失时自动从 `config.json.template` 复制生成 config.json（首次启动自动创建，见「首次运行」）；**字段缺失/为空数组/非数组时回退到默认 `["127.0.0.1","::1"]`（仅本机）**
+- `allowedIps`：**IP 白名单（本版本新增）**——只放行白名单内的客户端访问 HTTP `/rpc`、`/sse`、`/mcp` 端点、WebSocket `/` 桥接通道以及 `/ab` 资产端点，其余连接返回 403（WS）或 404（HTTP）；默认 `["127.0.0.1","::1"]` 仅本机。**配置缺失时自动从 `config.json.template` 复制生成 config.json（首次启动自动创建，见「首次运行」）**；**字段缺失/为空数组/非数组时回退到默认 `["127.0.0.1","::1"]`（仅本机）**
 - `llm`：LLM 配置（apiKey 用环境变量 `LLM_API_KEY` 覆盖更安全；config.json 已被 .gitignore 排除，勿提交真实 key）
+- `webSearch`：`web.search` 工具的多引擎配置（改动后重启生效）
+  - `order`：引擎优先级（默认 `serper → google → bing → ddg-html → ddg-lite`），按序尝试，失败自动降级；未配置凭据的引擎自动跳过
+  - `region`：中文查询的语言区域（默认 `zh-CN`），Serper/Google/必应/DDG 会带上对应 `gl/hl`、`mkt`、`kl` 参数，显著改善中文搜索质量
+  - `serper`：**可选（推荐）**——填 `apiKey`（[Serper.dev](https://serper.dev/)，Google 搜索结果 API，免费约 2500 次/月、免信用卡、需 Google 可达的网络——公司网络可用）即可启用。服务器启动时会探测 `google.serper.dev` 可达性——**大陆网络（Google 不可达）自动回退 Bing/DDG，无需改配置**；成功率/延迟最佳，中文质量 = Google
+  - `google`：**可选**——Programmable Search JSON API（**对新用户已关闭**，仅老 key 可在 2027-01-01 前使用），留空自动跳过
+  - `providerTimeoutMs`：单引擎请求超时（默认 15s；Serper/Google 探测用其中最多 5s）
+  - `cooldownMs`：某引擎连续失败 ≥2 次后的冷却时间（默认 60s；防止被墙引擎每次拖慢所有搜索）
 
 ## 开发
 
@@ -413,7 +428,7 @@ Get-Process -Name "node" | Stop-Process -Force
 - Unity Bridge 活动传输为 .NET `ClientWebSocket`（`NetWebSocketClient` 封装，`BridgeClient.ConnectToServer()` 创建）；旧版纯 TCP RFC 6455 实现（`WebSocketClient`）已标记 `[Obsolete]` 仅作参考
 - Server 同时暴露 HTTP `/rpc` 端点用于程序化调用（E2E 测试使用）
 - `/health` 端点返回 bridge 连接状态、工具列表、播放模式状态
-- HTTP `/rpc`、`/sse`、`/mcp` 端点受 `allowedIps` 白名单 gate（403）；WebSocket 升级路径与 `/ab` 不受限
+- HTTP `/rpc`、`/sse`、`/mcp` 端点受 `allowedIps` 白名单 gate（403）；WebSocket 桥接通道（1008 Forbidden）与 `/ab` 端点同样受白名单控制
 - 消息负载上限 4MB（maxPayload）
 - 服务端每 ~30s ping、超时未 pong 判定失活并 `terminate()` 断连（isAlive 心跳）
 - 日志脱敏：工具名 + 参数长度（不打印明文 payload），错误路径保留详情
