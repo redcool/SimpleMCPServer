@@ -43,6 +43,7 @@ const reconnectAttempts = new Map<string, number>();
 const RECONNECT_DELAYS_MS = [10_000, 30_000, 60_000, 120_000];
 
 function scheduleReconnect(cfg: MCPServerConfig): void {
+  if (cfg.enabled === false) return; // disabled in config — don't retry
   const attempt = reconnectAttempts.get(cfg.name) ?? 0;
   const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)];
   reconnectAttempts.set(cfg.name, attempt + 1);
@@ -151,6 +152,10 @@ async function startOne(cfg: MCPServerConfig): Promise<void> {
     try { await transport.close(); } catch { /* already closed */ }
     adapters.delete(cfg.name);
     if (capturedStderr) log(`${tag} stderr tail:`, capturedStderr);
+    // First-connect failure (e.g. Blender not running yet) must also retry —
+    // otherwise the adapter would be gone forever until the server restarts.
+    // scheduleReconnect ignores attempts for configs disabled via `enabled:false`.
+    scheduleReconnect(cfg);
     // Never fatal: server keeps running without this adapter.
     return;
   }

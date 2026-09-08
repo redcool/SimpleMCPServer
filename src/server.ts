@@ -26,7 +26,7 @@ import {
   setPlayModeState,
 } from './bridgeState.js';
 import { getMergedTools } from './tools.js';
-import { searchWeb } from './websearch.js';
+import { searchWeb, getSearchProviderSummary } from './websearch.js';
 import { handleABRequest } from './ab.js';
 import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool } from './mcpAdapter.js';
 
@@ -52,7 +52,7 @@ async function webSearchToolText(args: Record<string, unknown>): Promise<string>
   const query = String(args.query ?? '').trim();
   if (!query) throw new Error('Missing required argument: query');
   const max = Math.min(Math.max(Number.parseInt(String(args.maxResults ?? '5'), 10) || 5, 1), 10);
-  // Overall guard on top of the per-provider timeouts (3 × 15s worst case).
+  // Overall guard on top of the per-provider timeouts (provider chain, see config.webSearch).
   const results = await Promise.race([
     searchWeb(query, max),
     new Promise<never>((_, reject) => {
@@ -774,14 +774,12 @@ export async function main(): Promise<void> {
   }
 
   // ── Direct JSON-RPC handler (bypasses SSE, for tests) ──
-  let isInitialized = false;
 
   async function handleDirectRPC(msg: any): Promise<any> {
     if (!msg || typeof msg !== 'object') {
       return { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null };
     }
     if (msg.method === 'initialize') {
-      isInitialized = true;
       return {
         jsonrpc: '2.0',
         id: msg.id,
@@ -798,7 +796,6 @@ export async function main(): Promise<void> {
     }
 
     // /rpc endpoint is direct JSON-RPC — no MCP initialize handshake required.
-    // (The isInitialized flag is only for the SSE-based /mcp session.)
     if (msg.method === 'tools/list') {
       return {
         jsonrpc: '2.0',
@@ -928,6 +925,7 @@ export async function main(): Promise<void> {
     log(`[Server] AssetBundle→ POST /ab?name=<file> (upload) | GET /ab/<file> (download)`);
     log(`[Server] Payload encryption: ${appCfg.encryption && appCfg.encryptionKey ? 'enabled (AES-256-CBC)' : 'disabled'} (config.encryption=${appCfg.encryption})`);
     log(`[Server] eval tools: ${appCfg.evalEnabled ? 'enabled' : 'disabled'}`);
+    log(`[Server] Web search providers: ${getSearchProviderSummary()}`);
     log(`[Server] External MCP adapters: ${appCfg.mcpServers.length ? appCfg.mcpServers.map(s => s.name).join(', ') : 'none'}`);
     log(`[Server] Bridge     → ws://${appCfg.ip}:${appCfg.port}/ (WebSocket)`);
     const llmCfg = appCfg.llm;

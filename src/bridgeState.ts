@@ -1,4 +1,4 @@
-﻿// ── Growth limits ──
+// ── Growth limits ──
 
 import { WebSocket } from 'ws';
 import { encryptPayload } from './crypto.js';
@@ -77,18 +77,6 @@ export const pending = new Map<string, {
   bridgeId: string;
 }>();
 
-/**
- * Retry queue for tool calls that were in-flight when ALL bridges disconnected.
- * On reconnect (register_tools from any bridge), these are re-sent.
- */
-const retryQueue: Array<{
-  resolve: (value: string) => void;
-  reject: (err: Error) => void;
-  method: string;
-  params: Record<string, unknown>;
-  bridgeId: string;
-}> = [];
-let retryTimer: ReturnType<typeof setTimeout> | null = null;
 /** Pending AI request responses awaiting LLM reply, keyed by requestId. */
 export const pendingAI = new Map<string, {
   resolve: (value: string) => void;

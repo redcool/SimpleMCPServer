@@ -22,13 +22,14 @@ Thumbs.db
 
 # Logs
 npm-debug.log*
-
-# Config (contains API keys — use config.json.template instead)
-config.json
 /server.err
 /server.log
 /server.log.*
 /server.out
+/server-run.log
+
+# Config (contains API keys — use config.json.template instead)
+config.json
 /ab-cache
 
 # MCP adapter runtime media (screenshots from external MCP servers e.g. Blender)
