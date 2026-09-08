@@ -258,12 +258,16 @@ function probeHost(name: string, endpoint: string, timeoutMs: number): void {
   const p = probes[name];
   if (p.ok !== null && now - p.at < PROBE_COOLDOWN_MS) return;
   p.at = now;
+  const settle = (ok: boolean): void => {
+    probes[name].ok = ok;
+    log(`[Server] web.search: '${name}' reachability probe → ${ok ? 'reachable' : 'unreachable'}${ok ? '' : ' (will fall back to bing/ddg)'}`);
+  };
   try {
     fetch(endpoint, { method: 'HEAD', signal: AbortSignal.timeout(Math.min(timeoutMs, 5_000)) })
-      .then((r) => { probes[name].ok = r.status < 500; })
-      .catch(() => { probes[name].ok = false; });
+      .then((r) => settle(r.status < 500))
+      .catch(() => settle(false));
   } catch {
-    probes[name].ok = false;
+    settle(false);
   }
 }
 

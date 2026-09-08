@@ -1,6 +1,7 @@
 import { getCachedConfig } from './config.js';
 import { bridges, toolToBridge } from './bridgeState.js';
 import { getAdapterTools, isDangerAdapterTool } from './mcpAdapter.js';
+import { getBlenderTemplateTools } from './blenderTemplateTools.js';
 // ── Server-side tools (bridge management) ──
 
 const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
@@ -53,6 +54,17 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
     if (!seen.has(tool.name)) {
       seen.add(tool.name);
       merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
+    }
+  }
+  // Curated Blender template tools (blender.rig.*, blender.anim.*, ...).
+  // They execute code inside Blender, so they follow the same evalEnabled gate
+  // as other code-execution tools.
+  if (cfg.evalEnabled) {
+    for (const tool of getBlenderTemplateTools()) {
+      if (!seen.has(tool.name)) {
+        seen.add(tool.name);
+        merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
+      }
     }
   }
   // Merge bridge tools (last-registration-wins) — annotate the current routing target

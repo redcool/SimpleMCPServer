@@ -27,6 +27,7 @@ import {
 } from './bridgeState.js';
 import { getMergedTools } from './tools.js';
 import { searchWeb, getSearchProviderSummary } from './websearch.js';
+import { isBlenderTemplateTool, runBlenderTemplateTool } from './blenderTemplateTools.js';
 import { handleABRequest } from './ab.js';
 import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool } from './mcpAdapter.js';
 
@@ -123,6 +124,27 @@ export async function main(): Promise<void> {
         return { content: [{ type: 'text' as const, text }] };
       } catch (err: any) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    }
+
+    // ── Curated Blender template tools (blender.rig.*, blender.anim.*, ...) ──
+    // They run pre-written bpy code through the connected Blender adapter, so
+    // they respect the same evalEnabled gate as other code-execution tools.
+    if (isBlenderTemplateTool(toolName)) {
+      if (!getCachedConfig().evalEnabled) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Blender template tools are disabled (evalEnabled=false)' }) }],
+          isError: true,
+        };
+      }
+      try {
+        const text = await runBlenderTemplateTool(toolName, args);
+        return { content: [{ type: 'text' as const, text }] };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }],
+          isError: true,
+        };
       }
     }
 
@@ -849,6 +871,20 @@ export async function main(): Promise<void> {
       if (toolName === 'web.search') {
         try {
           const text = await webSearchToolText(args);
+          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
+        } catch (err: any) {
+          const reason = err instanceof Error ? err.message : String(err);
+          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: reason } };
+        }
+      }
+
+      // ── Curated Blender template tools (blender.rig.*, blender.anim.*, ...) ──
+      if (isBlenderTemplateTool(toolName)) {
+        if (!getCachedConfig().evalEnabled) {
+          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Blender template tools are disabled (evalEnabled=false)' } };
+        }
+        try {
+          const text = await runBlenderTemplateTool(toolName, args);
           return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
         } catch (err: any) {
           const reason = err instanceof Error ? err.message : String(err);
