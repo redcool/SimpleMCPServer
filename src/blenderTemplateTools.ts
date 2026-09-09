@@ -393,6 +393,390 @@ print("DONE — asset written, ready to import into Unity/Godot")`,
   },
 };
 
+// ── BODY BUILD (parameterized biped/quadruped blockout + rig + weights) ──
+//
+// One tool to block out a creature from primitives: body segments are placed
+// along the skeleton (bones are generated from the same preset table), so the
+// auto-weights land where they should. Presets are proportional parameters —
+// adding an animal = adding one row to QUAD_PRESETS.
+//
+// Coordinate convention: +Z up, head faces -Y (Blender front). Front legs at
+// y=-L/2, hind legs at y=+L/2, ground at z=0, shoulder height = H.
+
+interface QuadPreset {
+  label: string;
+  note: string;
+  /** shoulder height in meters — the base scale */
+  H: number;
+  /** body length / H (torso span) */
+  bodyLen: number;
+  /** body width / H */
+  bodyW: number;
+  /** neck length / H */
+  neckLen: number;
+  /** head length / H */
+  headLen: number;
+  /** head height / H */
+  headH: number;
+  /** tail length / H */
+  tailLen: number;
+  /** leg limb radius / H (front == hind) */
+  limbR: number;
+  /** front stance width / H (X offset) */
+  frontW: number;
+  /** hind stance width / H */
+  hindW: number;
+  /** horns/ears: small spheres ("ears"|"horns"|"") */
+  accessories: 'ears' | 'horns' | '';
+}
+
+const QUAD_PRESETS: Record<string, QuadPreset> = {
+  dog: {
+    label: '狗', note: '中等体躯、立耳、中等长尾', H: 0.6,
+    bodyLen: 1.6, bodyW: 0.45, neckLen: 0.4, headLen: 0.38, headH: 0.3,
+    tailLen: 0.8, limbR: 0.09, frontW: 0.45, hindW: 0.5, accessories: 'ears',
+  },
+  horse: {
+    label: '马', note: '长腿、长颈、长头、长尾', H: 1.5,
+    bodyLen: 1.5, bodyW: 0.5, neckLen: 0.55, headLen: 0.5, headH: 0.22,
+    tailLen: 0.9, limbR: 0.055, frontW: 0.3, hindW: 0.4, accessories: 'ears',
+  },
+  cat: {
+    label: '猫', note: '修长、圆头、长尾、立耳', H: 0.35,
+    bodyLen: 1.7, bodyW: 0.45, neckLen: 0.35, headLen: 0.38, headH: 0.4,
+    tailLen: 0.8, limbR: 0.06, frontW: 0.42, hindW: 0.5, accessories: 'ears',
+  },
+  wolf: {
+    label: '狼', note: '似狗但更高、胸更深、尾垂', H: 0.85,
+    bodyLen: 1.55, bodyW: 0.5, neckLen: 0.42, headLen: 0.42, headH: 0.28,
+    tailLen: 0.85, limbR: 0.08, frontW: 0.42, hindW: 0.48, accessories: 'ears',
+  },
+  cow: {
+    label: '牛', note: '宽厚躯干、短腿、头大、角', H: 1.35,
+    bodyLen: 1.35, bodyW: 0.7, neckLen: 0.35, headLen: 0.45, headH: 0.3,
+    tailLen: 0.5, limbR: 0.1, frontW: 0.5, hindW: 0.62, accessories: 'horns',
+  },
+};
+
+const BODY_BUILD: BlenderTemplateTool = {
+  name: 'blender.body.build',
+  description:
+    'Block out a creature from primitives and rig it: quadruped presets (dog/wolf/horse/cow/cat) or biped ' +
+    '(preset=human). Body parts are placed along the generated skeleton so auto-weights land correctly. ' +
+    'Returns mesh/rig/bone/vertex-group summary. Verify with get_viewport_screenshot.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      preset: {
+        type: 'string',
+        enum: ['dog', 'wolf', 'horse', 'cow', 'cat', 'human'],
+        description: 'Creature preset (default dog)',
+      },
+      height: { type: 'number', description: 'Shoulder height / base scale in meters (default: preset base)', minimum: 0.1 },
+      rigName: { type: 'string', description: 'Armature object name (default CreatureRig)' },
+      meshName: { type: 'string', description: 'Mesh object name (default CreatureBody)' },
+      bind: { type: 'boolean', description: 'Bind mesh to rig with automatic weights (default true)' },
+      resetBoneRoll: { type: 'boolean', description: 'Clear bone rolls for a clean T/stand pose (default true)' },
+    },
+  },
+  buildCode(args) {
+    const presetName = String(args.preset || 'dog');
+    const biped = presetName === 'human';
+    const base = QUAD_PRESETS[presetName] ?? QUAD_PRESETS.dog;
+    const H = pyfloat(args.height, base.H);
+    const rigName = pystr(args.rigName || 'CreatureRig');
+    const meshName = pystr(args.meshName || 'CreatureBody');
+    const bindFlag = pybool(args.bind, true);
+    const resetRoll = pybool(args.resetBoneRoll, true);
+
+    // Emit the preset as a python literal (numbers only — safe).
+    const P = JSON.stringify({ label: base.label, H, bodyLen: base.bodyLen, bodyW: base.bodyW, neckLen: base.neckLen, headLen: base.headLen, headH: base.headH, tailLen: base.tailLen, limbR: base.limbR, frontW: base.frontW, hindW: base.hindW, accessories: base.accessories });
+    const bipedFlag = biped ? 'True' : 'False';
+
+    return `import bpy, json, math
+from mathutils import Vector
+# ---- parameters ----
+H = ${H}          # shoulder height (base scale)
+P = ${P}          # preset proportions (relative to H)
+BIPED = ${bipedFlag}
+RIG_NAME = ${rigName}
+MESH_NAME = ${meshName}
+DO_BIND = ${bindFlag}
+RESET_ROLL = ${resetRoll}
+# remove previous same-named build (re-running rebuilds in place)
+for n in (RIG_NAME, MESH_NAME):
+    old = bpy.data.objects.get(n)
+    if old is not None:
+        bpy.data.objects.remove(old, do_unlink=True)
+J = lambda v: (v * H,)  # unused placeholder for clarity
+
+def cyl(name, r, d, loc):
+    bpy.ops.mesh.primitive_cylinder_add(radius=r, depth=d, vertices=24, location=Vector(loc))
+    o = bpy.context.active_object
+    o.name = name
+    o.select_set(False)
+    return o
+
+def sph(name, r, loc, scale=None):
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=r, segments=24, ring_count=12, location=Vector(loc))
+    o = bpy.context.active_object
+    if scale is not None:
+        o.scale = Vector(scale)
+        bpy.ops.object.transform_apply(scale=True)
+    o.name = name
+    o.select_set(False)
+    return o
+
+def cube(name, sz, loc):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=Vector(loc))
+    o = bpy.context.active_object
+    o.scale = Vector(sz)
+    bpy.ops.object.transform_apply(scale=True)
+    o.name = name
+    o.select_set(False)
+    return o
+
+# ---- skeleton definition (name, head, tail, parent) ----
+S = H
+L = S * P['bodyLen']          # body span
+BW = S * P['bodyW']           # body width
+HN = S * P['neckLen']         # neck length
+HL = S * P['headLen']         # head length
+HH = S * P['headH']           # head height
+TL = S * P['tailLen']         # tail length
+LR = S * P['limbR']           # limb radius
+FW = S * P['frontW']          # front stance half-width
+HW = S * P['hindW']           # hind stance half-width
+leg = S * 0.98                # front leg length (≈H)
+knee = S * 0.55               # knee height above ground
+
+if BIPED:
+    # -- humanoid (biped) skeleton, head -Y, feet on ground --
+    bones = [
+        ('root',       (0, 0, 0.02*S),      (0, 0, 0.06*S),      None),
+        ('hips',       (0, 0, 0.06*S),      (0, 0, 0.52*S),      'root'),
+        ('spine',      (0, 0, 0.52*S),      (0, 0, 0.66*S),      'hips'),
+        ('chest',      (0, 0, 0.66*S),      (0, 0, 0.76*S),      'spine'),
+        ('neck',       (0, 0, 0.76*S),      (0, 0, 0.82*S),      'chest'),
+        ('head',       (0, 0, 0.82*S),      (0, 0, 0.90*S),      'neck'),
+    ]
+    for side, sx in (('L', -1.0), ('R', 1.0)):
+        bones += [
+            (f'shoulder.{side}',  (sx*0.10*S, 0, 0.75*S), (sx*0.18*S, 0, 0.75*S), 'chest'),
+            (f'upper_arm.{side}', (sx*0.18*S, 0, 0.75*S), (sx*0.24*S, 0, 0.62*S), f'shoulder.{side}'),
+            (f'forearm.{side}',   (sx*0.24*S, 0, 0.62*S), (sx*0.24*S, 0, 0.48*S), f'upper_arm.{side}'),
+            (f'hand.{side}',      (sx*0.24*S, 0, 0.48*S), (sx*0.24*S, 0, 0.44*S), f'forearm.{side}'),
+            (f'thigh.{side}',     (sx*0.08*S, 0, 0.50*S), (sx*0.08*S, 0, 0.28*S), 'hips'),
+            (f'shin.{side}',      (sx*0.08*S, 0, 0.28*S), (sx*0.08*S, 0, 0.06*S), f'thigh.{side}'),
+            (f'foot.{side}',      (sx*0.08*S, 0, 0.06*S), (sx*0.03*S, 0.03*S, 0.02*S), f'shin.{side}'),
+        ]
+else:
+    # -- quadruped skeleton: +Y = tail/rear, -Y = head/front; spine at shoulder height --
+    hyp = H                                    # shoulder height
+    tailY = 0.38 * L                          # rear end (pelvis)
+    frontY = -0.36 * L                        # front end (shoulder)
+    bones = [
+        ('root',   (0, 0, 0.02*S),           (0, 0, 0.06*S),      None),
+        ('pelvis', (0, tailY, hyp*0.99),     (0, tailY - 0.10*L, hyp*1.02), 'root'),
+        ('spine1', (0, tailY - 0.16*L, hyp*1.03), (0, tailY - 0.30*L, hyp*1.05), 'pelvis'),
+        ('spine2', (0, tailY - 0.40*L, hyp*1.06), (0, frontY + 0.10*L, hyp*1.05), 'spine1'),
+        ('spine3', (0, frontY + 0.16*L, hyp*1.03), (0, frontY, hyp*1.02), 'spine2'),
+        ('shoulder', (0, frontY, hyp*1.02),  (0, frontY - 0.05*L, hyp*1.02), 'spine3'),
+        ('neck1',  (0, frontY - 0.05*L, hyp*1.02), (0, frontY - 0.05*L - 0.45*HN, hyp*1.16), 'shoulder'),
+        ('neck2',  (0, frontY - 0.05*L - 0.45*HN, hyp*1.14), (0, frontY - 0.05*L - 0.95*HN, hyp*1.26), 'neck1'),
+        ('head',   (0, frontY - 0.05*L - 0.95*HN, hyp*1.22), (0, frontY - 0.05*L - 0.95*HN - HL, hyp*1.28), 'neck2'),
+    ]
+    for side, sx in (('L', -1.0), ('R', 1.0)):
+        bones += [
+            (f'front_shoulder.{side}', (sx*FW, frontY, hyp*1.0),     (sx*FW, frontY, 0.45*S),          'shoulder'),
+            (f'upper_front.{side}',    (sx*FW, frontY, 0.45*S),      (sx*FW, frontY, 0.12*S),          f'front_shoulder.{side}'),
+            (f'lower_front.{side}',    (sx*FW, frontY, 0.12*S),      (sx*FW, frontY, 0.035*S),         f'upper_front.{side}'),
+            (f'front_paw.{side}',      (sx*FW, frontY, 0.035*S),     (sx*FW*1.25, frontY, 0.015*S),    f'lower_front.{side}'),
+            (f'hip.{side}',            (sx*HW, tailY, hyp*0.99),     (sx*HW, tailY, 0.45*S),           'pelvis'),
+            (f'thigh.{side}',          (sx*HW, tailY, 0.45*S),       (sx*HW, tailY, 0.12*S),           f'hip.{side}'),
+            (f'calf.{side}',           (sx*HW, tailY, 0.12*S),       (sx*HW, tailY, 0.035*S),          f'thigh.{side}'),
+            (f'hind_paw.{side}',       (sx*HW, tailY, 0.035*S),      (sx*HW*1.25, tailY, 0.015*S),     f'calf.{side}'),
+        ]
+    # tail: from pelvis toward +Y, rising
+    bones += [
+        ('tail1', (0, tailY, hyp*1.05),       (0, tailY + 0.45*TL, hyp*1.14),  'pelvis'),
+        ('tail2', (0, tailY + 0.45*TL, hyp*1.16), (0, tailY + 0.90*TL, hyp*1.24), 'tail1'),
+        ('tail3', (0, tailY + 0.90*TL, hyp*1.26), (0, tailY + 1.30*TL, hyp*1.18), 'tail2'),
+    ]
+
+# ---- create armature ----
+arm_data = bpy.data.armatures.new(RIG_NAME)
+rig = bpy.data.objects.new(RIG_NAME, arm_data)
+bpy.context.collection.objects.link(rig)
+bpy.context.view_layer.objects.active = rig
+bpy.ops.object.mode_set(mode='EDIT')
+created = []
+ed = {}
+for name, head, tail, parent in bones:
+    eb = arm_data.edit_bones.new(name)
+    eb.head = Vector(head)
+    eb.tail = Vector(tail)
+    if RESET_ROLL:
+        eb.roll = 0.0
+    if parent:
+        eb.parent = arm_data.edit_bones[parent]
+    created.append(name)
+    ed[name] = eb  # capture edit-bone refs INSIDE edit mode
+
+# ---- block out body parts along the skeleton (data only; edit-mode refs) ----
+def mid(a, b):
+    a = Vector(a); b = Vector(b)
+    return ((a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2)
+
+parts = []  # (name, kind, geom, loc, tail, head, scale)
+if BIPED:
+    body_c = (0, 0, S*0.66)
+    parts.append(('Torso', 'sph', S*0.26, body_c, None, None, (1.0, 0.75, 0.62)))
+else:
+    body_c = (0, 0.02*L, hyp*1.02)
+    parts.append(('Torso', 'sph', BW*0.62, body_c, None, None, (1.0, 1.6, 0.62)))
+    parts.append(('Chest', 'sph', BW*0.55, (0, frontY + 0.02*L, hyp*1.02), None, None, (1.0, 0.8, 1.0)))
+
+def bone_parts(bone_name, radius, part_name):
+    eb = ed[bone_name]
+    # MUST copy to plain tuples in EDIT mode: after leaving edit mode the
+    # EditBone head/tail memory can be freed/reordered, and lazy references
+    # stored in parts would read garbage (observed: zero axes on Thigh.L+).
+    _h = tuple(eb.head); _t = tuple(eb.tail)
+    parts.append((part_name, 'cyl', radius, mid(_h, _t), _t, _h, None))
+
+def bone_ball(bone_name, radius, part_name, offset=(0.0, 0.0, 0.0)):
+    eb = ed[bone_name]
+    _t = tuple(eb.tail)
+    t = Vector(_t) + Vector(offset)
+    parts.append((part_name, 'sph', radius, (t[0], t[1], t[2]), None, None, None))
+
+def bone_cube(bone_name, sz, part_name, offset=(0.0, 0.0, 0.0)):
+    eb = ed[bone_name]
+    _t = tuple(eb.tail)
+    t = Vector(_t) + Vector(offset)
+    parts.append((part_name, 'cube', sz, (t[0], t[1], t[2]), None, None, None))
+
+if BIPED:
+    bone_ball('head', S*0.14, 'Head', (0, 0, S*0.02))
+    bone_parts('neck', S*0.05, 'Neck')
+    for side in ('L', 'R'):
+        bone_parts(f'upper_arm.{side}', S*0.055, f'UpperArm.{side}')
+        bone_parts(f'forearm.{side}', S*0.05, f'Forearm.{side}')
+        bone_parts(f'thigh.{side}', S*0.085, f'Thigh.{side}')
+        bone_parts(f'shin.{side}', S*0.07, f'Shin.{side}')
+        bone_cube(f'foot.{side}', (S*0.11, S*0.20, S*0.02), f'Foot.{side}')
+else:
+    bone_ball('head', S*0.12*P['headH']/0.3, 'Head')
+    bone_parts('neck1', S*0.06, 'Neck')
+    for side in ('L', 'R'):
+        bone_parts(f'upper_front.{side}', LR, f'UpperFront.{side}')
+        bone_parts(f'lower_front.{side}', LR*0.78, f'LowerFront.{side}')
+        bone_cube(f'front_paw.{side}', (LR*1.7, LR*1.3, S*0.02), f'FrontPaw.{side}')
+        bone_parts(f'thigh.{side}', LR*1.05, f'Thigh.{side}')
+        bone_parts(f'calf.{side}', LR*0.82, f'Calf.{side}')
+        bone_cube(f'hind_paw.{side}', (LR*1.7, LR*1.3, S*0.02), f'HindPaw.{side}')
+    # tail as tapering spheres along tail bones
+    bone_ball('tail1', S*0.04, 'Tail1')
+    bone_ball('tail2', S*0.028, 'Tail2')
+    bone_ball('tail3', S*0.018, 'Tail3')
+    # accessories
+    acc = P['accessories']
+    hl = ed['head']
+    if acc == 'ears':
+        for side, sx in (('L', -1.0), ('R', 1.0)):
+            parts.append((f'Ear.{side}', 'sph', S*0.05, (sx*S*0.11, hl.tail[1] + S*0.03, hl.tail[2] + S*0.10), None, None, None))
+    elif acc == 'horns':
+        for side, sx in (('L', -1.0), ('R', 1.0)):
+            parts.append((f'Horn.{side}', 'cyl', S*0.045, (sx*S*0.09, hl.tail[1] - S*0.02, hl.tail[2] + S*0.10), (sx*S*0.02, hl.tail[1] - S*0.10, hl.tail[2] + S*0.32), hl.tail, None))
+
+# ---- build cylindrical parts with bmesh along the bone axis ----
+import math as _math
+import bmesh as _bmesh
+
+def make_cyl(name, h_vec, t_vec, r, seg=16):
+    """Cylinder spanning h_vec→t_vec. Avoids quaternion rotations entirely
+    (rotation_difference is singular for anti-parallel axes, which produced
+    NaN transforms for vertical limb bones)."""
+    h_vec = Vector(h_vec); t_vec = Vector(t_vec)
+    axis = t_vec - h_vec
+    L = axis.length
+    if L < 1e-6:
+        return None
+    dirv = axis / L
+    ref = Vector((0, 0, 1))
+    if abs(dirv.dot(ref)) > 0.9:
+        ref = Vector((1, 0, 0))
+    u = dirv.cross(ref).normalized()
+    v = dirv.cross(u).normalized()
+    bm = _bmesh.new()
+    th = []; tt = []
+    for i in range(seg):
+        a = i / seg * _math.tau
+        off = (_math.cos(a) * u + _math.sin(a) * v) * r
+        th.append(bm.verts.new(h_vec + off))
+        tt.append(bm.verts.new(t_vec + off))
+    for i in range(seg):
+        j = (i + 1) % seg
+        bm.faces.new([th[i], tt[i], tt[j], th[j]])
+    bm.faces.new(th)
+    bm.faces.new(list(reversed(tt)))
+    bm.normal_update()
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    o = bpy.data.objects.new(name, me)
+    bpy.context.collection.objects.link(o)
+    return o
+
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.object.select_all(action='DESELECT')
+
+# spawn parts
+for (name, kind, geom, loc, tail, head, scale) in parts:
+    loc = Vector(loc)
+    if kind == 'sph':
+        sph(name, geom, [loc[0], loc[1], loc[2]], scale)
+    elif kind == 'cyl':
+        if tail is not None and head is not None:
+            make_cyl(name, head, tail, geom)
+        else:
+            cyl(name, geom, geom, [loc[0], loc[1], loc[2]])
+    elif kind == 'cube':
+        cube(name, geom, [loc[0], loc[1], loc[2]])
+
+# merge all body parts into one mesh
+me = bpy.data.objects.new('__merge_target', bpy.data.meshes.new('__merge'))
+bpy.context.collection.objects.link(me)
+bpy.ops.object.select_all(action='DESELECT')
+for n in [p[0] for p in parts]:
+    o = bpy.data.objects.get(n)
+    if o is not None and o.type == 'MESH':
+        o.select_set(True)
+me.select_set(True)  # join requires the active object to be in the selection
+bpy.context.view_layer.objects.active = me
+bpy.ops.object.join()
+me.name = MESH_NAME
+
+# ---- bind ----
+bind_status = 'skipped'
+if DO_BIND:
+    me.select_set(True)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    try:
+        bpy.ops.object.parent_set(type='ARMATURE_AUTO')
+        bind_status = 'ARMATURE_AUTO ok'
+    except Exception as e:
+        bind_status = f'auto weights failed: {e}'
+
+# ---- summary ----
+import json as _json
+print(_json.dumps({'mesh': MESH_NAME, 'rig': RIG_NAME, 'bones': len(created), 'mode': 'biped' if BIPED else 'quadruped', 'preset': ${pystr(presetName)}, 'label': '${base.label}', 'bind': bind_status}, ensure_ascii=False))
+print("DONE — verify visually with blender.get_viewport_screenshot")`;
+  },
+};
+
 const TOOLS: BlenderTemplateTool[] = [
   RIG_HUMANOID,
   RIG_AUTO_WEIGHTS,
@@ -400,6 +784,7 @@ const TOOLS: BlenderTemplateTool[] = [
   MESH_PRIMITIVE,
   MESH_BOOLEAN,
   SCENE_EXPORT,
+  BODY_BUILD,
 ];
 
 export function getBlenderTemplateTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
