@@ -41,14 +41,14 @@ AI/Agent ──MCP(SSE /mcp、Streamable HTTP /mcp-stream、直连 JSON-RPC /rpc
 - 决策:**不 fork blender-mcp**。在 SimpleMcpServer 侧注册 `blender.rig.* / blender.anim.* / blender.mesh.* / blender.scene.* / blender.body.*` 模板工具,内部调 `blender.<prefix>.execute_blender_code` 发送**预写好的 bpy 脚本**。
 - 理由:免打包/no-fork/no-addon 改动;AI 只需业务参数不写 bpy;模板经人工验证,质量稳定;模板 bug 改自己仓库即可。
 
-### D6. 动物体块工具 blender.body.build(0.0.9.0 待提交)
+### D6. 动物体块工具 blender.body.build + 四足动作 blender.anim.quadruped(0.0.9.0 已提交 07e6fc0)
 - 决策:用户要求"基础形体工具除了人形还要常见四足动物" → 参数化通用体块构建器 `blender.body.build`。
 - 思路:**preset 表驱动**(`QUAD_PRESETS`:dog/horse/cat/wolf/cow;`preset=human` 走 biped 分支)所有几何参数都是**相对肩高 H 的比例系数**,改动物=加一行预设。体块沿**同一份骨架数据**摆放(躯干/头/颈/四肢/尾各部件贴着骨骼),因此 ARMATURE_AUTO 自动权重天然贴合。
 - 输出:CreatureBody mesh + CreatureRig 骨架(dog 系 28 骨;human 20 骨)+ ARMATURE_AUTO 权重;`rigName/meshName/bind/resetBoneRoll` 可自定义;重复调用同名重建(先删旧对象),不误删场景其它对象。
 - 四足骨架约定:**+Y=尾/臀、-Y=头/肩(Blender 前向)**;肩高= `height` 参数,地面 z=0。骨架命名:root→pelvis→spine1..3→shoulder→neck1..2→head;前腿 front_shoulder/upper_front/lower_front/front_paw ×L.R;后腿 hip/thigh/calf/hind_paw ×L.R;tail1..3。
 - 朝向注意:Blender 前向是 -Y,Unity 前向是 +Z——FBX 导入 Unity 需查 forward 轴映射(待验证,见待办)。
-- 模板工具清单(7):`rig.humanoid`、`rig.auto_weights`、`anim.loop`(idle/walk)、`mesh.primitive`、`mesh.boolean`、`scene.export`(fbx/glb)、`body.build`(四足/人形预设)。
-- 已端到端验证 7/7 成功(dog/horse/cat/wolf/cow/human 五预设 + 自定义命名 + 同名重建 + 权重统计)。
+- 模板工具清单(8):`rig.humanoid`、`rig.auto_weights`、`anim.loop`(idle/walk)、`anim.quadruped`(walk/trot/pace)、`mesh.primitive`、`mesh.boolean`、`scene.export`(fbx/glb)、`body.build`(四足/人形预设)。
+- 已端到端验证成功:body.build 六预设(dog/horse/cat/wolf/cow/human)+ 自定义命名 + 同名重建 + 权重统计(左右对称、28/20 骨全覆盖);anim.quadruped 三种步态(walk 40f/trot 24f/pace 20f,相位表 walk=LF→RH→RF→LH 四拍、trot=对角配对、pace=同侧配对,rotation_euler 正弦摆动,首末帧无缝,pose 求值抽查 front_shoulder.L 帧 0/10/20/30/39 = 0/0.5/0/-0.5/-0.078)。
 
 ### D5. 仓库可提交状态(0.0.7.0 + 0.0.7.1,已 push)
 - 用户自行 push;adapter 首连重连修复、死代码清理、README allowedIps 同步。
@@ -170,7 +170,7 @@ Get-Content server.log -Tail 20                     # 日志(server.log 已 giti
 
 ## 5. 当前状态与待办
 
-- **已完成**:web search 多 provider(serper 实测通)、仓库整理提交 0.0.7.0/0.0.7.1(已 push)、模板工具 7 个全部端到端验证。0.0.8.0(6 模板 + websearch 探测日志 + session_memory)已提交 fdff3ee,用户自行 push;**blender.body.build 四足/人形通用体块构建器完成并验证**(0.0.9.0 待提交):dog/horse/cat/wolf/cow 预设 + human 收编,bmesh 建柱避 NaN、EditBone 引用 tuple 固化避悬垂(P10),权重左右对称、28 骨(四足)/20 骨(人形)全覆盖。
-- **待提交**:`src/blenderTemplateTools.ts`(BODY_BUILD)+ session_memory.md(D6/P10) → 建议 `0.0.9.0 add: blender.body.build (preset quadruped/biped blockout + auto weights)`。
-- **待办**:README 补充模板工具章节与 config 示例;`mesh.boolean` 实测;Unity/Godot 桥修复(P7);四足 walk/trot 动作模板(拍点参数化:犬科对角两拍、蹄类四拍,可挂到 body.build 产物上);FBX 前向轴验证(Blender -Y → Unity +Z 的 forward 映射);(可选)方案 B 深度封装(改 blender-mcp server.py + addon 加原生 @mcp.tool)。
+- **已完成**:web search 多 provider(serper 实测通)、仓库整理提交 0.0.7.0/0.0.7.1(已 push)、模板工具 8 个全部端到端验证。0.0.8.0(6 模板 + websearch 探测日志 + session_memory)已提交 fdff3ee,用户自行 push;**blender.body.build 四足/人形通用体块构建器完成并验证**(0.0.9.0,已提交 07e6fc0):dog/horse/cat/wolf/cow 预设 + human 收编,bmesh 建柱避 NaN、EditBone 引用 tuple 固化避悬垂(P10),权重左右对称、28 骨(四足)/20 骨(人形)全覆盖;**blender.anim.quadruped 四足动作模板完成**(walk/trot/pace 三种步态,相位表参数化,首末帧无缝,已验证,待提交)。
+- **待提交**:`src/blenderTemplateTools.ts`(QUAD_ANIM)+ session_memory.md → 建议 `0.0.10.0 add: blender.anim.quadruped (walk/trot/pace gait loop)`。
+- **待办**:README 补充模板工具章节与 config 示例;`mesh.boolean` 实测;Unity/Godot 桥修复(P7);FBX 前向轴验证(Blender -Y → Unity +Z 的 forward 映射);(可选)方案 B 深度封装(改 blender-mcp server.py + addon 加原生 @mcp.tool)。
 - **环境事实**:Blender 5.2.0(新 Action API)、uvx blender-mcp@1.9.1、addon v1.6、协议 v5 匹配;`bridgeConnected:false` 是正常的(桥未连时)。

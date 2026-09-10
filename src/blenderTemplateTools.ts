@@ -254,6 +254,109 @@ print("DONE — verify visually with blender.get_viewport_screenshot")`,
   },
 };
 
+// ── QUADRUPED ANIMATION ──
+
+const QUAD_ANIM: BlenderTemplateTool = {
+  name: 'blender.anim.quadruped',
+  description:
+    'Create a looping quadruped locomotion action on an armature built by blender.body.build '
+    + '(bone names front_shoulder/upper_front/hip/thigh/calf/spine/neck/tail). Gaits: walk '
+    + '(4-beat lateral: LF→RH→RF→LH), trot (2-beat diagonal: LF+RH in phase), pace '
+    + '(2-beat same-side). First/last frames match for a seamless loop. '
+    + 'Verify with get_viewport_screenshot.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      rig: { type: 'string', description: 'Armature object name (default: active)' },
+      actionName: { type: 'string', description: 'Action name (default QuadrupedWalk / QuadrupedTrot / QuadrupedPace)' },
+      gait: { type: 'string', enum: ['walk', 'trot', 'pace'], description: 'Gait pattern (default walk)' },
+      frames: { type: 'number', description: 'Loop length in frames (default: walk 40 / trot 24 / pace 20)', minimum: 4 },
+      amplitude: { type: 'number', description: 'Master amplitude scale (default 1.0)', minimum: 0.1 },
+      legSwing: { type: 'number', description: 'Root leg swing angle in radians (default 0.5 ≈ 29°)', minimum: 0.0 },
+      kneeLift: { type: 'number', description: 'Knee/ankle bend during swing phase (default 0.55)', minimum: 0.0 },
+      bodyBob: { type: 'number', description: 'Pelvis vertical bob in meters (default 0.05)', minimum: 0.0 },
+      tailWag: { type: 'number', description: 'Tail swish amplitude in radians (default 0.35)', minimum: 0.0 },
+    },
+  },
+  buildCode(args) {
+    const rigArg = args.rig ? pystr(args.rig) : 'bpy.context.active_object.name';
+    const gait = args.gait === 'trot' || args.gait === 'pace' ? args.gait : 'walk';
+    const actionName = pystr(args.actionName || (gait === 'trot' ? 'QuadrupedTrot' : gait === 'pace' ? 'QuadrupedPace' : 'QuadrupedWalk'));
+    const frames = Math.max(4, pyint(args.frames, gait === 'walk' ? 40 : gait === 'trot' ? 24 : 20));
+    const amp = pyfloat(args.amplitude, 1.0);
+    const legSwing = pyfloat(args.legSwing, 0.5);
+    const kneeLift = pyfloat(args.kneeLift, 0.55);
+    const bodyBob = pyfloat(args.bodyBob, 0.05);
+    const tailWag = pyfloat(args.tailWag, 0.35);
+    return withVerify(
+      `import bpy, json, math
+rig = bpy.data.objects.get(${rigArg})
+if rig is None or rig.type != 'ARMATURE':
+    raise RuntimeError('armature not found (pass rig="<name>")')
+# Rebuild the action (Blender 5.x removed Action.fcurves — see ANIM_LOOP).
+old_action = bpy.data.actions.get(${actionName})
+if old_action is not None:
+    bpy.data.actions.remove(old_action)
+action = bpy.data.actions.new(${actionName})
+rig.animation_data_create()
+rig.animation_data.action = action
+GAIT = ${pystr(gait)}
+FRAMES = ${frames}
+AMP = ${amp}
+SWING = ${legSwing}
+KNEE = ${kneeLift}
+BOB = ${bodyBob}
+WAG = ${tailWag}
+bones = {b.name: b for b in rig.pose.bones}
+def need(*names):
+    missing = [n for n in names if n not in bones]
+    if missing:
+        raise RuntimeError('quadruped skeleton missing bones (did you use blender.body.build?): ' + ', '.join(missing))
+# phase table: phase for each leg root (radians) — LF=front_shoulder.L, RF=front_shoulder.R, LH=hip.L, RH=hip.R
+if GAIT == 'walk':
+    P = {'front_shoulder.L': 0.0, 'hip.R': math.pi / 2.0, 'front_shoulder.R': math.pi, 'hip.L': 1.5 * math.pi}
+elif GAIT == 'trot':
+    P = {'front_shoulder.L': 0.0, 'hip.R': 0.0, 'front_shoulder.R': math.pi, 'hip.L': math.pi}
+else:  # pace — same-side pairs in phase
+    P = {'front_shoulder.L': 0.0, 'hip.L': 0.0, 'front_shoulder.R': math.pi, 'hip.R': math.pi}
+LEGS = {
+    'front_shoulder.L': ('upper_front.L', 'lower_front.L'),
+    'front_shoulder.R': ('upper_front.R', 'lower_front.R'),
+    'hip.L': ('thigh.L', 'calf.L'),
+    'hip.R': ('thigh.R', 'calf.R'),
+}
+need('pelvis', 'spine2', 'shoulder', 'head', 'neck1', 'tail1', 'tail2', 'tail3', *[b for pair in LEGS.values() for b in pair], *P.keys())
+for pb in rig.pose.bones:
+    pb.rotation_mode = 'XYZ'
+for f in range(FRAMES):
+    t = f / FRAMES * math.tau
+    bpy.context.scene.frame_set(f)
+    for root, (knee, ankle) in LEGS.items():
+        ph = P[root]
+        bones[root].rotation_euler.x = SWING * math.sin(t + ph)
+        kb = KNEE * max(0.0, math.sin(t + ph + 1.3))  # bend only while swinging/forward
+        bones[knee].rotation_euler.x = kb
+        bones[ankle].rotation_euler.x = 0.25 * kb
+    bones['pelvis'].location.z = BOB * math.sin(t)
+    bones['spine2'].rotation_euler.x = 0.06 * AMP * math.sin(t + 0.8)
+    bones['shoulder'].rotation_euler.x = 0.035 * AMP * math.sin(t + 0.8)
+    bones['head'].rotation_euler.x = 0.08 * AMP * math.sin(t + 2.2)
+    bones['neck1'].rotation_euler.x = 0.04 * AMP * math.sin(t + 2.2)
+    bones['tail1'].rotation_euler.z = WAG * math.sin(2.0 * t + 1.0)
+    bones['tail2'].rotation_euler.z = WAG * 0.8 * math.sin(2.0 * t + 1.2)
+    bones['tail3'].rotation_euler.z = WAG * 0.6 * math.sin(2.0 * t + 1.4)
+    for pb in rig.pose.bones:
+        if pb.rotation_euler != (0.0, 0.0, 0.0):
+            pb.keyframe_insert(data_path='rotation_euler', frame=f)
+        if pb.location != (0.0, 0.0, 0.0):
+            pb.keyframe_insert(data_path='location', frame=f)
+print(json.dumps({'rig': rig.name, 'action': action.name, 'gait': GAIT, 'frames': FRAMES}, ensure_ascii=False))
+print("DONE — verify visually with blender.get_viewport_screenshot")`,
+      `{'rig': rig.name, 'action': action.name, 'gait': GAIT, 'frames': FRAMES}`,
+    );
+  },
+};
+
 // ── MODELING ──
 
 const MESH_PRIMITIVE: BlenderTemplateTool = {
@@ -366,14 +469,13 @@ const SCENE_EXPORT: BlenderTemplateTool = {
     properties: {
       format: { type: 'string', enum: ['fbx', 'glb'], description: 'Export format (default fbx)' },
       path: { type: 'string', description: 'Absolute output file path (default C:/tmp/<scene>.<ext>)' },
-      selectedOnly: { type: 'boolean', description: 'Export only selected objects (default false = whole scene)' },
+      selectedOnly: { type: 'boolean', description: 'Export only the objects currently selected (default false = whole scene)' },
     },
   },
   buildCode(args) {
     const fmt = args.format === 'glb' ? 'glb' : 'fbx';
     const selectedOnly = pybool(args.selectedOnly, false);
     const path = args.path ? pystr(args.path) : '';
-    const setSel = selectedOnly === 'True' ? 'bpy.ops.object.select_all(action="DESELECT")\nbpy.ops.object.select_all(action="SELECT")\n' : '';
     return withVerify(
       `import bpy, json, os
 scene = bpy.context.scene
@@ -381,7 +483,7 @@ out = ${path}
 if not out:
     out = os.path.join('C:/tmp', (scene.name or 'scene') + ('.fbx' if '${fmt}' == 'fbx' else '.glb'))
 os.makedirs(os.path.dirname(out), exist_ok=True) if os.path.dirname(out) else None
-${setSel}if '${fmt}' == 'fbx':
+if '${fmt}' == 'fbx':
     bpy.ops.export_scene.fbx(filepath=out, use_selection=${selectedOnly})
 else:
     bpy.ops.export_scene.gltf(filepath=out, export_format='GLB', use_selection=${selectedOnly})
@@ -781,14 +883,17 @@ const TOOLS: BlenderTemplateTool[] = [
   RIG_HUMANOID,
   RIG_AUTO_WEIGHTS,
   ANIM_LOOP,
+  QUAD_ANIM,
   MESH_PRIMITIVE,
   MESH_BOOLEAN,
   SCENE_EXPORT,
   BODY_BUILD,
 ];
 
+const TARGET_PROPERTY = { type: 'string', description: '目标 Blender 适配器前缀，例如 blender 或 blender2；省略则使用配置中的第一个可用实例' };
+
 export function getBlenderTemplateTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
-  return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+  return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: { ...t.inputSchema, properties: { ...(t.inputSchema.properties as Record<string, unknown> ?? {}), target: TARGET_PROPERTY } } }));
 }
 
 export function isBlenderTemplateTool(toolName: string): boolean {
@@ -804,7 +909,9 @@ export async function runBlenderTemplateTool(toolName: string, args: Record<stri
   const tool = TOOLS.find((t) => t.name === toolName);
   if (!tool) throw new Error(`unknown blender template tool: ${toolName}`);
   const cfg = getCachedConfig();
-  const prefixes = (cfg.mcpServers ?? []).map((s) => s.toolsPrefix ?? s.name);
+  const configured = (cfg.mcpServers ?? []).map((s) => s.toolsPrefix ?? s.name);
+  const requested = typeof args.target === 'string' && args.target.trim() ? args.target.trim() : undefined;
+  const prefixes = requested ? [requested] : configured;
   let code: string;
   try {
     code = tool.buildCode(args);
@@ -819,6 +926,6 @@ export async function runBlenderTemplateTool(toolName: string, args: Record<stri
     }
   }
   throw new Error(
-    `${toolName}: no connected Blender adapter (started Blender with the blender_mcp addon?) — checked prefixes: ${prefixes.join(', ') || '(none configured)'}`,
+    `${toolName}: no connected Blender adapter${requested ? ` for target '${requested}'` : ''} — checked prefixes: ${prefixes.join(', ') || '(none configured)'}`,
   );
 }
