@@ -170,7 +170,8 @@ Get-Content server.log -Tail 20                     # 日志(server.log 已 giti
 
 ## 5. 当前状态与待办
 
-- **已完成**:web search 多 provider(serper 实测通)、仓库整理提交 0.0.7.0/0.0.7.1(已 push)、模板工具 8 个全部端到端验证。0.0.8.0(6 模板 + websearch 探测日志 + session_memory)已提交 fdff3ee,用户自行 push;**blender.body.build 四足/人形通用体块构建器完成并验证**(0.0.9.0,已提交 07e6fc0):dog/horse/cat/wolf/cow 预设 + human 收编,bmesh 建柱避 NaN、EditBone 引用 tuple 固化避悬垂(P10),权重左右对称、28 骨(四足)/20 骨(人形)全覆盖;**blender.anim.quadruped 四足动作模板完成**(walk/trot/pace 三种步态,相位表参数化,首末帧无缝,已验证,待提交)。
-- **待提交**:`src/blenderTemplateTools.ts`(QUAD_ANIM)+ session_memory.md → 建议 `0.0.10.0 add: blender.anim.quadruped (walk/trot/pace gait loop)`。
-- **待办**:README 补充模板工具章节与 config 示例;`mesh.boolean` 实测;Unity/Godot 桥修复(P7);FBX 前向轴验证(Blender -Y → Unity +Z 的 forward 映射);(可选)方案 B 深度封装(改 blender-mcp server.py + addon 加原生 @mcp.tool)。
+- **已完成**:web search 多 provider(serper 实测通)、仓库整理提交 0.0.7.0/0.0.7.1(已 push)、模板工具 8 个全部端到端验证。0.0.8.0 已提交 fdff3ee(用户自行 push);0.0.9.0 `blender.body.build` 已提交 07e6fc0;0.0.10.0 `blender.anim.quadruped`(walk/trot/pace)已提交 d36569f。
+- **本次(0.0.10.1 已提交 b2a868d)**:`mesh.boolean` 实测时发现**通用参数 `target` 与工具自身 `target` 键冲突**(mesh.boolean 的 target 被误当适配器前缀)→ 通用适配器选择参数改名 **`adapter`**,其余工具不受影响;实测 DIFFERENCE 通过(verts 8→16,modifier 已 apply)。新增独立文档 **`docs/blender-mcp-template-tools.md`**(8 工具参数表 + 四足工作流 + FBX 轴验证),README 加链接避免膨胀。新增 `scripts/peek-fbx-axes.mjs`(解析 FBX GlobalSettings 轴 + 顶点 bbox)。
+- **FBX 前向轴实测结论**:`scene.export` 默认 `axis_forward='-Y', axis_up='Z'` 落盘的 FBX,GlobalSettings=UpAxis Z+ / FrontAxis Y+,网格顶点包围盒与 Blender 场景逐位一致(dog x[-0.42,0.42] y[-0.92,1.0] z[0,0.86])——**几何不做轴交换**,朝向仅由 GlobalSettings 声明,Unity 侧按 Bake Axis Conversion 处理,首次导入需目检朝向定一次性映射约定。
+- **待办**:Unity/Godot 桥修复(P7);README 模板工具 config 示例;(可选)方案 B 深度封装(改 blender-mcp server.py + addon 加原生 @mcp.tool)。
 - **环境事实**:Blender 5.2.0(新 Action API)、uvx blender-mcp@1.9.1、addon v1.6、协议 v5 匹配;`bridgeConnected:false` 是正常的(桥未连时)。

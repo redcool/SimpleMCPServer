@@ -890,10 +890,10 @@ const TOOLS: BlenderTemplateTool[] = [
   BODY_BUILD,
 ];
 
-const TARGET_PROPERTY = { type: 'string', description: '目标 Blender 适配器前缀，例如 blender 或 blender2；省略则使用配置中的第一个可用实例' };
+const ADAPTER_PROPERTY = { type: 'string', description: '目标 Blender 适配器前缀，例如 blender 或 blender2；省略则使用配置中的第一个可用实例' };
 
 export function getBlenderTemplateTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
-  return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: { ...t.inputSchema, properties: { ...(t.inputSchema.properties as Record<string, unknown> ?? {}), target: TARGET_PROPERTY } } }));
+  return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: { ...t.inputSchema, properties: { ...(t.inputSchema.properties as Record<string, unknown> ?? {}), adapter: ADAPTER_PROPERTY } } }));
 }
 
 export function isBlenderTemplateTool(toolName: string): boolean {
@@ -910,7 +910,7 @@ export async function runBlenderTemplateTool(toolName: string, args: Record<stri
   if (!tool) throw new Error(`unknown blender template tool: ${toolName}`);
   const cfg = getCachedConfig();
   const configured = (cfg.mcpServers ?? []).map((s) => s.toolsPrefix ?? s.name);
-  const requested = typeof args.target === 'string' && args.target.trim() ? args.target.trim() : undefined;
+  const requested = typeof args.adapter === 'string' && args.adapter.trim() ? args.adapter.trim() : undefined;
   const prefixes = requested ? [requested] : configured;
   let code: string;
   try {

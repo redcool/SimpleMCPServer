@@ -255,6 +255,12 @@ pwsh scripts\start-blender-instance.ps1 -Instance 2 -BlendFile D:\proj\a.blend
 6. **退出接入**：删掉/注释 `mcpServers` 块，或在条目内加 `"enabled": false`，重启 Server 即断开（不卸载 Blender 侧任何东西）。
 7. **已知坑**：Blender 中文界面下默认对象名是本地化的（如 `primitive_cube_add` 生成 "立方体" 而非 "Cube.001"），脚本建议显式 `o.name=...`；经 PowerShell 传中文参数需显式 UTF-8 编码。
 
+### 高层模板工具（本仓库预置的 `blender.*` 快捷工具）
+
+除透传的 blender-mcp 原生工具外，Server 内置一组**高层 Blender 模板工具**（建模/骨骼/动画/导出，无需 AI 写 bpy 脚本）：`blender.rig.humanoid`、`blender.rig.auto_weights`、`blender.anim.loop`、`blender.anim.quadruped`、`blender.mesh.primitive`、`blender.mesh.boolean`、`blender.body.build`（参数化四足/人形体块）、`blender.scene.export`。
+
+> 完整用法、参数表与典型工作流（如"一句话生成会走的四足动物"）见 **[docs/blender-mcp-template-tools.md](docs/blender-mcp-template-tools.md)**。所有模板工具均受 `evalEnabled` 门控，并接受通用参数 `adapter` 指定目标 Blender 实例。
+
 ## 可用工具
 
 工具由 Unity Bridge 通过 `register_tools` 动态注册，数量随桥接平台/条件编译变化（当前 Editor 桥实测 127 个桥工具 + 服务端合成 2 个 = 129 个）。下表按类别简述常用工具；完整清单见 [SimpleMCPBridge](https://github.com/redcool/SimpleMCPBridge_Unity) 仓库 README。
