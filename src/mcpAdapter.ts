@@ -168,6 +168,13 @@ export async function startAdapters(cfgs: MCPServerConfig[]): Promise<void> {
   }
 }
 
+export interface AdapterHealth {
+  name: string; prefix: string; enabled: boolean; pid: number | null; down: string | null; toolCount: number;
+}
+export function getAdapterHealth(): AdapterHealth[] {
+  return [...adapters.values()].map((st) => ({ name: st.cfg.name, prefix: st.cfg.toolsPrefix ?? st.cfg.name, enabled: st.enabled, pid: st.pid, down: st.down, toolCount: st.tools.length }));
+}
+
 export function getAdapterTools(): AdapterTool[] {
   const out: AdapterTool[] = [];
   for (const st of adapters.values()) {

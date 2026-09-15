@@ -83,6 +83,11 @@ export const pendingAI = new Map<string, {
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
+
+/** Return whether an AI request id is already in flight. */
+export function hasPendingAIRequest(requestId: string): boolean {
+  return pendingAI.has(requestId);
+}
 /** Whether Unity is currently compiling scripts. Bridge reports via {"type":"compilation","status":"started|finished"}. */
 export let isUnityCompiling = false;
 /** Current Unity play mode state. Bridge reports via {"type":"playmode","status":"entered|exiting|entered_edit|exiting_edit"}. */

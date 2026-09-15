@@ -162,7 +162,7 @@ export async function handleABRequest(req: http.IncomingMessage, res: http.Serve
         let received = 0, aborted = false;
         req.on('data', (chunk: Buffer) => {
           received += chunk.length;
-          if (received > MAX_AB_SIZE) {
+          if (received > getCachedConfig().limits.maxUploadBytes) {
             aborted = true;
             try { out.destroy(); } catch {}
             try { unlinkSync(filePath); } catch {}

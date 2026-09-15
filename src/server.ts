@@ -8,7 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { log } from './logger.js';
-import { getCachedConfig, loadAppConfig, isIpAllowed, reloadConfig } from './config.js';
+import { getCachedConfig, loadAppConfig, isIpAllowed, isAuthorized, reloadConfig } from './config.js';
 import { isEncryptionEnabled, encryptPayload, decryptPayload } from './crypto.js';
 import { callLLM, AIRequestMessage } from './llm.js';
 import {
@@ -17,6 +17,7 @@ import {
   toolToBridge,
   pending,
   pendingAI,
+  hasPendingAIRequest,
   isUnityCompiling,
   playModeState,
   rejectPendingForBridge,
@@ -28,10 +29,13 @@ import {
 import { getMergedTools } from './tools.js';
 import { searchWeb, getSearchProviderSummary } from './websearch.js';
 import { isBlenderTemplateTool, runBlenderTemplateTool } from './blenderTemplateTools.js';
+import { getBlenderAdvancedTools, isBlenderAdvancedTool, runBlenderAdvancedTool } from './blenderAdvancedTools.js';
 import { handleABRequest } from './ab.js';
-import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool } from './mcpAdapter.js';
+import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool, getAdapterHealth } from './mcpAdapter.js';
 
-const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+const MAX_BODY_SIZE = 1024 * 1024; // legacy fallback
+let activeAIRequests = 0;
+function rejectHttp(res: http.ServerResponse, status: number, message: string): void { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: message })); }
 
 // ── WebSocket liveness tracking (half-open connection reaping) ──
 type AliveWebSocket = WebSocket & { isAlive?: boolean; clientIp?: string };
@@ -130,6 +134,16 @@ export async function main(): Promise<void> {
     // ── Curated Blender template tools (blender.rig.*, blender.anim.*, ...) ──
     // They run pre-written bpy code through the connected Blender adapter, so
     // they respect the same evalEnabled gate as other code-execution tools.
+    if (isBlenderAdvancedTool(toolName)) {
+      if (!getCachedConfig().evalEnabled) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Blender advanced tools are disabled (evalEnabled=false)' }) }], isError: true };
+      try { const text = await runBlenderAdvancedTool(toolName, args, async (code) => {
+        const cfg = getCachedConfig();
+        const prefixes = (cfg.mcpServers ?? []).map(s => s.toolsPrefix ?? s.name);
+        for (const prefix of prefixes) { const name = `${prefix}.execute_blender_code`; if (isAdapterTool(name)) return callAdapterTool(name, { code }); }
+        throw new Error('no connected Blender adapter');
+      }); return { content: [{ type: 'text' as const, text }] }; } catch (err: any) { return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }], isError: true }; }
+    }
+
     if (isBlenderTemplateTool(toolName)) {
       if (!getCachedConfig().evalEnabled) {
         return {
@@ -361,9 +375,21 @@ export async function main(): Promise<void> {
 
       // ── AI Request from Bridge ──
       if (msg.type === 'ai_request') {
-        const requestId = msg.requestId || `ai_${Date.now()}`;
+        const requestId = String(msg.requestId || `ai_${Date.now()}`);
+        const limits = getCachedConfig().limits;
+        if (!/^[A-Za-z0-9._:-]{1,128}$/.test(requestId)) { ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId: requestId.slice(0,128), text: null, error: 'Invalid requestId' }))); return; }
+        if (activeAIRequests >= limits.maxAiConcurrent) { ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'AI concurrency limit exceeded' }))); return; }
+        const prompt = typeof msg.prompt === 'string' ? msg.prompt : '';
+        if (prompt.length > limits.maxPromptChars || Buffer.byteLength(JSON.stringify(msg.context || {}), 'utf8') > limits.maxContextBytes) { ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'AI input exceeds configured limits' }))); return; }
         const safePrompt = String(msg.prompt || '').slice(0, 80).replace(/[\r\n"]/g, ' ');
         log(`[Server] AI request: ${requestId}, prompt: ${safePrompt}`);
+
+        // Do not overwrite an in-flight request: duplicate requestIds must receive
+        // a deterministic error instead of racing and losing the first response.
+        if (hasPendingAIRequest(requestId)) {
+          ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'Duplicate requestId: request already in progress' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
+          return;
+        }
 
         const llmCfg = getCachedConfig().llm;
         if (!llmCfg.enabled) {
@@ -375,8 +401,9 @@ export async function main(): Promise<void> {
           return;
         }
 
+        activeAIRequests++;
         const llmReq: AIRequestMessage = {
-          prompt: msg.prompt || '',
+          prompt,
           context: msg.context || {},
           system: msg.system || undefined,
           messages: msg.messages || undefined,
@@ -385,6 +412,7 @@ export async function main(): Promise<void> {
         const aiTimeout = setTimeout(() => {
           if (pendingAI.has(requestId)) {
             pendingAI.delete(requestId);
+            activeAIRequests = Math.max(0, activeAIRequests - 1);
             ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: 'LLM request timed out (90s)' })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
           }
         }, 90_000);
@@ -394,11 +422,13 @@ export async function main(): Promise<void> {
             clearTimeout(aiTimeout);
             ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text, error: null })), (err) => { if (err) log('[Server] ws.send failed:', err.message); });
             pendingAI.delete(requestId);
+            activeAIRequests = Math.max(0, activeAIRequests - 1);
           },
           reject: (err: Error) => {
             clearTimeout(aiTimeout);
             ws.send(encryptPayload(JSON.stringify({ type: 'ai_response', requestId, text: null, error: err.message })), (err2) => { if (err2) log('[Server] ws.send failed:', err2.message); });
             pendingAI.delete(requestId);
+            activeAIRequests = Math.max(0, activeAIRequests - 1);
           },
           timer: aiTimeout,
         });
@@ -560,7 +590,10 @@ export async function main(): Promise<void> {
   });
 
   async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url!, `http://${req.headers.host}`);
+    const url = new URL(req.url!, `http://${req.headers.host || 'localhost'}`);
+    const cfg = getCachedConfig();
+    const protectedPath = ['/sse', '/mcp', '/mcp-stream', '/rpc', '/health'].includes(url.pathname);
+    if (protectedPath && (!isIpAllowed(req.socket.remoteAddress) || !isAuthorized(req.headers))) { rejectHttp(res, 401, 'Unauthorized'); return; }
 
     // ── MCP SSE endpoint (GET) — agent establishes SSE stream ──
     if (req.method === 'GET' && url.pathname === '/sse') {
@@ -617,7 +650,7 @@ export async function main(): Promise<void> {
       let body = '';
       req.on('data', (chunk: Buffer) => {
         body += chunk;
-        if (body.length > MAX_BODY_SIZE) {
+        if (body.length > getCachedConfig().limits.maxBodyBytes) {
           req.destroy(new Error('Request body too large'));
           return;
         }
@@ -682,7 +715,7 @@ export async function main(): Promise<void> {
       let body = '';
       req.on('data', (chunk: Buffer) => {
         body += chunk;
-        if (body.length > MAX_BODY_SIZE) {
+        if (body.length > getCachedConfig().limits.maxBodyBytes) {
           req.destroy(new Error('Request body too large'));
           return;
         }
@@ -720,7 +753,7 @@ export async function main(): Promise<void> {
       let body = '';
       req.on('data', (chunk: Buffer) => {
         body += chunk;
-        if (body.length > MAX_BODY_SIZE) {
+        if (body.length > getCachedConfig().limits.maxBodyBytes) {
           req.destroy(new Error('Request body too large'));
           return;
         }
@@ -787,6 +820,7 @@ export async function main(): Promise<void> {
         llmConfigured: !!llmCfg.apiKey,
         llmProvider: llmCfg.provider,
         llmModel: llmCfg.model,
+        adapters: getAdapterHealth(),
       }));
       return;
     }
@@ -879,7 +913,17 @@ export async function main(): Promise<void> {
       }
 
       // ── Curated Blender template tools (blender.rig.*, blender.anim.*, ...) ──
-      if (isBlenderTemplateTool(toolName)) {
+      if (isBlenderAdvancedTool(toolName)) {
+      if (!getCachedConfig().evalEnabled) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Blender advanced tools are disabled (evalEnabled=false)' }) }], isError: true };
+      try { const text = await runBlenderAdvancedTool(toolName, args, async (code) => {
+        const cfg = getCachedConfig();
+        const prefixes = (cfg.mcpServers ?? []).map(s => s.toolsPrefix ?? s.name);
+        for (const prefix of prefixes) { const name = `${prefix}.execute_blender_code`; if (isAdapterTool(name)) return callAdapterTool(name, { code }); }
+        throw new Error('no connected Blender adapter');
+      }); return { content: [{ type: 'text' as const, text }] }; } catch (err: any) { return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }], isError: true }; }
+    }
+
+    if (isBlenderTemplateTool(toolName)) {
         if (!getCachedConfig().evalEnabled) {
           return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Blender template tools are disabled (evalEnabled=false)' } };
         }

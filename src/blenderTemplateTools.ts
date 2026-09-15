@@ -467,14 +467,19 @@ const SCENE_EXPORT: BlenderTemplateTool = {
   inputSchema: {
     type: 'object',
     properties: {
-      format: { type: 'string', enum: ['fbx', 'glb'], description: 'Export format (default fbx)' },
+      preset: { type: 'string', enum: ['unity', 'unreal', 'godot'], description: 'Explicit target preset; Unity/Unreal use FBX, Godot uses GLB.' },
+      format: { type: 'string', enum: ['fbx', 'glb'], description: 'Export format (ignored when preset is provided; default fbx)' },
       path: { type: 'string', description: 'Absolute output file path (default C:/tmp/<scene>.<ext>)' },
       selectedOnly: { type: 'boolean', description: 'Export only the objects currently selected (default false = whole scene)' },
+      validateOnly: { type: 'boolean', description: 'Validate scene/export settings without writing a file' },
     },
   },
   buildCode(args) {
-    const fmt = args.format === 'glb' ? 'glb' : 'fbx';
+    const preset = typeof args.preset === 'string' ? args.preset.toLowerCase() : '';
+    if (preset && !['unity', 'unreal', 'godot'].includes(preset)) throw new Error('preset must be unity, unreal, or godot');
+    const fmt = preset === 'godot' ? 'glb' : (preset ? 'fbx' : (args.format === 'glb' ? 'glb' : 'fbx'));
     const selectedOnly = pybool(args.selectedOnly, false);
+    const validateOnly = pybool(args.validateOnly, false);
     const path = args.path ? pystr(args.path) : '';
     return withVerify(
       `import bpy, json, os
@@ -482,14 +487,19 @@ scene = bpy.context.scene
 out = ${path}
 if not out:
     out = os.path.join('C:/tmp', (scene.name or 'scene') + ('.fbx' if '${fmt}' == 'fbx' else '.glb'))
-os.makedirs(os.path.dirname(out), exist_ok=True) if os.path.dirname(out) else None
-if '${fmt}' == 'fbx':
-    bpy.ops.export_scene.fbx(filepath=out, use_selection=${selectedOnly})
+validation = {'format': '${fmt}', 'preset': '', 'scene': scene.name, 'objects': len(scene.objects)}
+if ${validateOnly}:
+    print(json.dumps({'valid': True, **validation}, ensure_ascii=False))
 else:
-    bpy.ops.export_scene.gltf(filepath=out, export_format='GLB', use_selection=${selectedOnly})
-size = os.path.getsize(out) if os.path.exists(out) else 0
-print(json.dumps({'format': '${fmt}', 'path': out, 'bytes': size}, ensure_ascii=False))
-print("DONE — asset written, ready to import into Unity/Godot")`,
+    os.makedirs(os.path.dirname(out), exist_ok=True) if os.path.dirname(out) else None
+    if '${fmt}' == 'fbx':
+        bpy.ops.export_scene.fbx(filepath=out, use_selection=${selectedOnly}, apply_unit_scale=True)
+    else:
+        bpy.ops.export_scene.gltf(filepath=out, export_format='GLB', use_selection=${selectedOnly}, export_apply=True)
+    size = os.path.getsize(out) if os.path.exists(out) else 0
+    validation.update({'valid': os.path.exists(out), 'path': out, 'bytes': size})
+    print(json.dumps(validation, ensure_ascii=False))
+print("DONE — export validation complete")`,
       `{'format': '${fmt}', 'path': out, 'bytes': size}`,
     );
   },
@@ -879,9 +889,41 @@ print("DONE — verify visually with blender.get_viewport_screenshot")`;
   },
 };
 
+const UV_UNWRAP: BlenderTemplateTool = { name:'blender.uv.unwrap', description:'Unwrap mesh UVs.', inputSchema:{type:'object',properties:{object:{type:'string'},method:{type:'string'}}}, buildCode(a){const o=a.object?pystr(a.object):'bpy.context.active_object.name';return withVerify('import bpy\no=bpy.data.objects.get('+o+')\nbpy.context.view_layer.objects.active=o; o.select_set(True); bpy.ops.object.mode_set(mode="EDIT"); bpy.ops.mesh.select_all(action="SELECT"); bpy.ops.uv.unwrap(); bpy.ops.object.mode_set(mode="OBJECT")','{"object":o.name}')}};
+const UV_PACK: BlenderTemplateTool = { name:'blender.uv.pack', description:'Pack mesh UV islands.', inputSchema:{type:'object',properties:{object:{type:'string'},margin:{type:'number'}}}, buildCode(a){const o=a.object?pystr(a.object):'bpy.context.active_object.name';const m=pyfloat(a.margin,0.001);return withVerify('import bpy\no=bpy.data.objects.get('+o+')\nbpy.context.view_layer.objects.active=o; o.select_set(True); bpy.ops.object.mode_set(mode="EDIT"); bpy.ops.mesh.select_all(action="SELECT"); bpy.ops.uv.pack_islands(margin='+m+'); bpy.ops.object.mode_set(mode="OBJECT")','{"object":o.name}')}};
+const MATERIAL_PBR: BlenderTemplateTool = { name:'blender.material.pbr', description:'Create Principled BSDF PBR material.', inputSchema:{type:'object',properties:{object:{type:'string'},material:{type:'string'},metallic:{type:'number'},roughness:{type:'number'}}}, buildCode(a){const o=a.object?pystr(a.object):'bpy.context.active_object.name';const n=pystr(a.material||'PBRMaterial');const me=pyfloat(a.metallic,0);const ro=pyfloat(a.roughness,.5);return withVerify('import bpy\no=bpy.data.objects.get('+o+')\nm=bpy.data.materials.get('+n+') or bpy.data.materials.new('+n+');m.use_nodes=True;b=m.node_tree.nodes.get("Principled BSDF");b.inputs["Metallic"].default_value='+me+';b.inputs["Roughness"].default_value='+ro+';o.data.materials.append(m)','{"object":o.name,"material":m.name}')}};
+const RIG_BIND: BlenderTemplateTool = { name:'blender.rig.bind', description:'Bind mesh to armature with automatic weights.', inputSchema:{type:'object',properties:{mesh:{type:'string'},rig:{type:'string'}}}, buildCode(a){const m=a.mesh?pystr(a.mesh):'bpy.context.active_object.name';const r=a.rig?pystr(a.rig):'""';return withVerify('import bpy\nmesh=bpy.data.objects.get('+m+');rig=bpy.data.objects.get('+r+') if '+r+' else None\nbpy.ops.object.select_all(action="DESELECT");mesh.select_set(True);rig.select_set(True);bpy.context.view_layer.objects.active=rig;bpy.ops.object.parent_set(type="ARMATURE_AUTO")','{"mesh":mesh.name,"rig":rig.name}')}};
+const ANIM_NLA_ADD: BlenderTemplateTool = { name:'blender.anim.nla_add', description:'Add action as NLA strip.', inputSchema:{type:'object',properties:{rig:{type:'string'},action:{type:'string'},track:{type:'string'}}}, buildCode(a){if(!a.action)throw new Error('action is required');const r=a.rig?pystr(a.rig):'bpy.context.active_object.name';const ac=pystr(a.action);const tr=pystr(a.track||'NLA Track');return withVerify('import bpy\nrig=bpy.data.objects.get('+r+');act=bpy.data.actions.get('+ac+')\nrig.animation_data_create();t=rig.animation_data.nla_tracks.new();t.name='+tr+';t.strips.new(act.name,1,act)','{"rig":rig.name,"action":act.name}')}};
+
+const HEALTH: BlenderTemplateTool = { name: 'blender.health', description: 'Return Blender version, file, object, material, action and adapter-side scene health.', inputSchema: { type:'object', properties:{} }, buildCode() { return withVerify('import bpy\nimport json\nprint(json.dumps({"blender":bpy.app.version_string,"filepath":bpy.data.filepath,"objects":len(bpy.data.objects),"meshes":len(bpy.data.meshes),"materials":len(bpy.data.materials),"actions":len(bpy.data.actions),"scene":bpy.context.scene.name}, ensure_ascii=False)', '{}'); } };
+
+const ASSET_VALIDATE: BlenderTemplateTool = { name: 'blender.asset.validate', description: 'Validate mesh UVs, materials and transforms.', inputSchema: { type: 'object', properties: { object: { type: 'string' } } }, buildCode(a) { const o = a.object ? pystr(a.object) : 'bpy.context.active_object.name'; return withVerify("import bpy\nimport json\no=bpy.data.objects.get("+o+")\nif o is None: raise RuntimeError('object not found')\nissues=[]\nif o.type == 'MESH':\n    if len(o.data.uv_layers) == 0: issues.append('missing_uv')\n    if len(o.data.materials) == 0: issues.append('missing_material')\n    if any(abs(s-1)>1e-4 for s in o.scale): issues.append('unapplied_scale')\nprint(json.dumps({'object':o.name,'type':o.type,'issues':issues,'valid':not issues},ensure_ascii=False))", '{}'); } };
+
+const UV_CHECK: BlenderTemplateTool = { name: 'blender.uv.check', description: 'Check UV layer presence and bounds.', inputSchema: { type: 'object', properties: { object: { type: 'string' } } }, buildCode(a) { const o = a.object ? pystr(a.object) : 'bpy.context.active_object.name'; return withVerify("import bpy\nimport json\no=bpy.data.objects.get("+o+")\nif o is None: raise RuntimeError('object not found')\nuv=o.data.uv_layers.active\nissues=[]\nif uv is None: issues.append('missing_uv')\nelse:\n    vals=[(l.uv.x,l.uv.y) for l in uv.data]\n    if vals and (min(x for x,y in vals)<-0.01 or max(x for x,y in vals)>1.01 or min(y for x,y in vals)<-0.01 or max(y for x,y in vals)>1.01): issues.append('uv_out_of_0_1')\nprint(json.dumps({'object':o.name,'layers':len(o.data.uv_layers),'issues':issues,'valid':not issues},ensure_ascii=False))", '{}'); } };
+
+const RIG_VALIDATE: BlenderTemplateTool = { name: 'blender.rig.validate', description: 'Validate armature modifier and weighted vertices.', inputSchema: { type: 'object', properties: { mesh: { type: 'string' }, rig: { type: 'string' } } }, buildCode(a) { const m = a.mesh ? pystr(a.mesh) : 'bpy.context.active_object.name'; const r = a.rig ? pystr(a.rig) : 'None'; return withVerify("import bpy\nimport json\nmesh=bpy.data.objects.get("+m+")\nrig=bpy.data.objects.get("+r+") if "+r+" else None\nif mesh is None or rig is None: raise RuntimeError('mesh and rig are required')\nmods=[x for x in mesh.modifiers if x.type=='ARMATURE' and x.object==rig]\nweighted=sum(1 for v in mesh.data.vertices if v.groups)\nissues=[]\nif not mods: issues.append('missing_armature_modifier')\nif len(rig.data.bones)==0: issues.append('no_bones')\nif weighted<len(mesh.data.vertices): issues.append('unweighted_vertices')\nprint(json.dumps({'mesh':mesh.name,'rig':rig.name,'bones':len(rig.data.bones),'vertices':len(mesh.data.vertices),'weighted':weighted,'issues':issues,'valid':not issues},ensure_ascii=False))", '{}'); } };
+
+const ANIM_LIST: BlenderTemplateTool = { name: 'blender.anim.list', description: 'List Blender actions with frame ranges and F-curve counts.', inputSchema: { type: 'object', properties: {} }, buildCode() { return withVerify("import bpy\nimport json\nprint(json.dumps({'actions':[{'name':a.name,'start':a.frame_start,'end':a.frame_end,'fcurves':len(a.fcurves)} for a in bpy.data.actions]},ensure_ascii=False))", '{}'); } };
+
+const ANIM_INFO: BlenderTemplateTool = { name: 'blender.anim.info', description: 'Inspect one action.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] }, buildCode(a) { const ac = pystr(a.action); return withVerify("import bpy\nimport json\na=bpy.data.actions.get("+ac+")\nif a is None: raise RuntimeError('action not found')\nprint(json.dumps({'name':a.name,'start':a.frame_start,'end':a.frame_end,'fcurves':len(a.fcurves)},ensure_ascii=False))", '{}'); } };
+
+const EXPORT_VALIDATE: BlenderTemplateTool = { name: 'blender.export.validate', description: 'Validate target export prerequisites for Unity, Unreal or Godot.', inputSchema: { type: 'object', properties: { preset: { type: 'string', enum: ['unity','unreal','godot'] } }, required: ['preset'] }, buildCode(a) { const p = pystr(String(a.preset || 'godot').toLowerCase()); return withVerify("import bpy\nimport json\npreset="+p+"\nobjs=list(bpy.context.scene.objects)\nissues=[]\nif not objs: issues.append('empty_scene')\nif not any(x.type=='MESH' for x in objs): issues.append('missing_mesh')\nprint(json.dumps({'preset':preset,'objects':len(objs),'format':'glb' if preset=='godot' else 'fbx','issues':issues,'valid':not issues},ensure_ascii=False))", '{}'); } };
+
 const TOOLS: BlenderTemplateTool[] = [
+  HEALTH,
+  ASSET_VALIDATE,
+  UV_CHECK,
+  RIG_VALIDATE,
+  ANIM_LIST,
+  ANIM_INFO,
+  EXPORT_VALIDATE,
   RIG_HUMANOID,
   RIG_AUTO_WEIGHTS,
+  UV_UNWRAP,
+  UV_PACK,
+  MATERIAL_PBR,
+  RIG_BIND,
+  ANIM_NLA_ADD,
   ANIM_LOOP,
   QUAD_ANIM,
   MESH_PRIMITIVE,

@@ -60,6 +60,12 @@ export interface AppConfig {
   abCacheDir: string;
   /** IPs allowed to call the AI-facing HTTP endpoints (/rpc, /sse, /mcp). Default: loopback only. */
   allowedIps: string[];
+  /** Optional bearer token. Empty/missing preserves legacy unauthenticated local mode. */
+  authToken: string;
+  /** Optional allowlist for exposed tool names (empty means all safe registered tools). */
+  allowedTools: string[];
+  /** Resource limits for untrusted requests. */
+  limits: { maxBodyBytes: number; maxUploadBytes: number; maxPromptChars: number; maxContextBytes: number; maxAiConcurrent: number; maxToolArgsBytes: number };
   llm: LLMConfig;
   /** External MCP servers (e.g. BlenderMCP) to proxy tools from. */
   mcpServers: MCPServerConfig[];
@@ -89,6 +95,9 @@ export function loadAppConfig(): AppConfig {
     encryption: false,
     encryptionKey: '',
     allowedIps: [...DEFAULT_ALLOWED_IPS],
+    authToken: '',
+    allowedTools: [],
+    limits: { maxBodyBytes: 1024 * 1024, maxUploadBytes: 512 * 1024 * 1024, maxPromptChars: 32_000, maxContextBytes: 256 * 1024, maxAiConcurrent: 4, maxToolArgsBytes: 256 * 1024 },
     llm: {
       enabled: false,
       provider: 'openai',
@@ -127,6 +136,9 @@ export function loadAppConfig(): AppConfig {
       ...defaults,
       ...raw,
       // Deep-merge webSearch (shallow spread would drop sub-objects like google/serper)
+      limits: { ...defaults.limits, ...(raw.limits ?? {}) },
+      allowedTools: Array.isArray(raw.allowedTools) ? raw.allowedTools.filter((x: unknown) => typeof x === 'string' && x.length <= 200) : [],
+      authToken: typeof raw.authToken === 'string' ? raw.authToken : '',
       webSearch: {
         ...defaults.webSearch,
         ...(raw.webSearch ?? {}),
@@ -149,6 +161,14 @@ export function loadAppConfig(): AppConfig {
 
 /** True if the given remote address may call AI-facing HTTP endpoints.
  *  Normalizes IPv4-mapped IPv6 (::ffff:127.0.0.1 → 127.0.0.1). */
+export function isAuthorized(headers: { authorization?: string | string[] }): boolean {
+  const token = getCachedConfig().authToken;
+  if (!token) return true;
+  const value = headers.authorization;
+  const expected = `Bearer ${token}`;
+  return typeof value === 'string' && value.length === expected.length && value === expected;
+}
+
 export function isIpAllowed(remoteAddress: string | undefined): boolean {
   if (!remoteAddress) return false;
   let ip = remoteAddress;

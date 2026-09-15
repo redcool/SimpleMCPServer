@@ -2,6 +2,7 @@ import { getCachedConfig } from './config.js';
 import { bridges, toolToBridge } from './bridgeState.js';
 import { getAdapterTools, isDangerAdapterTool } from './mcpAdapter.js';
 import { getBlenderTemplateTools } from './blenderTemplateTools.js';
+import { getBlenderAdvancedTools } from './blenderAdvancedTools.js';
 // ── Server-side tools (bridge management) ──
 
 const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
@@ -39,10 +40,12 @@ const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Reco
 
 export function getMergedTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
   const cfg = getCachedConfig();
+  const isAllowed = (name: string) => cfg.allowedTools.length === 0 || cfg.allowedTools.includes(name);
   const seen = new Set<string>();
   const merged: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [];
   // Server-side tools first
   for (const tool of SERVER_TOOLS) {
+    if (!isAllowed(tool.name)) continue;
     seen.add(tool.name);
     merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
   }
@@ -51,6 +54,7 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
   for (const tool of getAdapterTools()) {
     // Code-execution tools hide from listings while evalEnabled=false
     if (!cfg.evalEnabled && isDangerAdapterTool(tool.name)) continue;
+    if (!isAllowed(tool.name)) continue;
     if (!seen.has(tool.name)) {
       seen.add(tool.name);
       merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
@@ -60,7 +64,8 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
   // They execute code inside Blender, so they follow the same evalEnabled gate
   // as other code-execution tools.
   if (cfg.evalEnabled) {
-    for (const tool of getBlenderTemplateTools()) {
+    for (const tool of [...getBlenderTemplateTools(), ...getBlenderAdvancedTools().map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))]) {
+      if (!isAllowed(tool.name)) continue;
       if (!seen.has(tool.name)) {
         seen.add(tool.name);
         merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });

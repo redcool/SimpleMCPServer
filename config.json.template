@@ -5,6 +5,16 @@
     "encryption": false,
     "evalEnabled": true,
     "allowedIps": ["127.0.0.1", "::1"],
+    "authToken": "",
+    "allowedTools": [],
+    "limits": {
+        "maxBodyBytes": 1048576,
+        "maxUploadBytes": 536870912,
+        "maxPromptChars": 32000,
+        "maxContextBytes": 262144,
+        "maxAiConcurrent": 4,
+        "maxToolArgsBytes": 262144
+    },
     "llm": {
         "enabled": true,
         "provider": "agnes",
