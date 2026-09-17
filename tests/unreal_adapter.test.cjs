@@ -1,0 +1,10 @@
+'use strict';
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const adapter=fs.readFileSync(path.join(root,'src','unreal','unrealAdapter.ts'),'utf8');
+const tools=fs.readFileSync(path.join(root,'src','unreal','unrealTools.ts'),'utf8');
+const merged=fs.readFileSync(path.join(root,'src','tools.ts'),'utf8');
+test('Unreal phase one has explicit adapter routing and safety gates',()=>{assert.match(adapter,/resolveUnrealAdapter/);assert.match(adapter,/execute_unreal_code/);assert.match(adapter,/evalEnabled/);assert.match(adapter,/no connected Unreal adapter/);assert.match(tools,/unreal.health/);assert.match(tools,/unreal.capabilities/);assert.match(tools,/adapter/);assert.match(merged,/getUnrealTools/);});
