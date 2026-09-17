@@ -7,4 +7,5 @@ const root=path.resolve(__dirname,'..');
 const adapter=fs.readFileSync(path.join(root,'src','unreal','unrealAdapter.ts'),'utf8');
 const tools=fs.readFileSync(path.join(root,'src','unreal','unrealTools.ts'),'utf8');
 const merged=fs.readFileSync(path.join(root,'src','tools.ts'),'utf8');
-test('Unreal phase one has explicit adapter routing and safety gates',()=>{assert.match(adapter,/resolveUnrealAdapter/);assert.match(adapter,/execute_unreal_code/);assert.match(adapter,/evalEnabled/);assert.match(adapter,/no connected Unreal adapter/);assert.match(tools,/unreal.health/);assert.match(tools,/unreal.capabilities/);assert.match(tools,/adapter/);assert.match(merged,/getUnrealTools/);});
+const assets=fs.readFileSync(path.join(root,'src','unreal','unrealAssetTools.ts'),'utf8');
+test('Unreal phase one has explicit adapter routing and safety gates',()=>{assert.match(adapter,/resolveUnrealAdapter/);assert.match(adapter,/execute_unreal_code/);assert.match(adapter,/evalEnabled/);assert.match(adapter,/no connected Unreal adapter/);assert.match(tools,/unreal.health/);assert.match(tools,/unreal.capabilities/);assert.match(tools,/adapter/);assert.match(merged,/getUnrealTools/);assert.match(merged,/getUnrealAssetTools/);assert.match(assets,/unreal\.asset\.manifest/);assert.match(assets,/unreal\.job\.status/);});
