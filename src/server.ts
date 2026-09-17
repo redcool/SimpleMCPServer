@@ -30,6 +30,11 @@ import { getMergedTools } from './tools.js';
 import { searchWeb, getSearchProviderSummary } from './websearch.js';
 import { isBlenderTemplateTool, runBlenderTemplateTool } from './blender/blenderTemplateTools.js';
 import { getBlenderAdvancedTools, isBlenderAdvancedTool, runBlenderAdvancedTool } from './blender/blenderAdvancedTools.js';
+import { isCuratedUnrealTool, runCuratedUnrealTool } from './unreal/unrealTools.js';
+import { isUnrealAssetTool, runUnrealAssetTool } from './unreal/unrealAssetTools.js';
+import { runUnrealCapabilityTool } from './unreal/unrealCapabilityTools.js';
+import { runUnrealPipelineTool } from './unreal/unrealPipelineTools.js';
+import { isUnrealFractureTool, runUnrealFractureTool } from './unreal/unrealFractureTools.js';
 import { handleABRequest } from './ab.js';
 import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool, getAdapterHealth } from './mcpAdapter.js';
 
@@ -159,6 +164,20 @@ export async function main(): Promise<void> {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }],
           isError: true,
         };
+      }
+    }
+
+    if (isCuratedUnrealTool(toolName) || isUnrealAssetTool(toolName) || isUnrealFractureTool(toolName) || toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.') || toolName.startsWith('unreal.pipeline.')) {
+      try {
+        let text: string;
+        if (isCuratedUnrealTool(toolName)) text = await runCuratedUnrealTool(toolName, args);
+        else if (isUnrealAssetTool(toolName)) text = await runUnrealAssetTool(toolName, args);
+        else if (isUnrealFractureTool(toolName)) text = await runUnrealFractureTool(toolName, args);
+        else if (toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.')) text = await runUnrealCapabilityTool(toolName, args);
+        else text = await runUnrealPipelineTool(toolName, args);
+        return { content: [{ type: 'text' as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }], isError: true };
       }
     }
 
@@ -935,6 +954,19 @@ export async function main(): Promise<void> {
           return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: reason } };
         }
       }
+
+      if (isCuratedUnrealTool(toolName) || isUnrealAssetTool(toolName) || isUnrealFractureTool(toolName) || toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.') || toolName.startsWith('unreal.pipeline.')) {
+        try {
+          let text: string;
+          if (isCuratedUnrealTool(toolName)) text = await runCuratedUnrealTool(toolName, args);
+          else if (isUnrealAssetTool(toolName)) text = await runUnrealAssetTool(toolName, args);
+          else if (isUnrealFractureTool(toolName)) text = await runUnrealFractureTool(toolName, args);
+          else if (toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.')) text = await runUnrealCapabilityTool(toolName, args);
+          else text = await runUnrealPipelineTool(toolName, args);
+          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
+        } catch (err: any) { return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err?.message ?? String(err) } }; }
+      }
+
 
       // ── Enforce evalEnabled on execution too (listing filter is not a gate) ──
       if (toolName === 'editor.eval' && !getCachedConfig().evalEnabled) {

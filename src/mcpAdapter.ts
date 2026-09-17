@@ -7,6 +7,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { log } from './logger.js';
@@ -25,7 +26,7 @@ export interface AdapterTool {
 interface AdapterState {
   cfg: MCPServerConfig;
   client: Client;
-  transport: StdioClientTransport;
+  transport: StdioClientTransport | StreamableHTTPClientTransport;
   pid: number | null;
   tools: AdapterTool[];
   enabled: boolean;
@@ -89,14 +90,16 @@ async function startOne(cfg: MCPServerConfig): Promise<void> {
   if (existing) adapters.delete(cfg.name);
 
   let capturedStderr = '';
-  const transport = new StdioClientTransport({
-    command: cfg.command,
-    args: cfg.args ?? [],
-    env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
-    stderr: 'pipe' as const,
-  });
+  const transport = cfg.transport === 'streamable-http'
+    ? new StreamableHTTPClientTransport(new URL(cfg.url ?? ''), { requestInit: { headers: cfg.headers ?? {} } })
+    : new StdioClientTransport({
+        command: cfg.command ?? '',
+        args: cfg.args ?? [],
+        env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
+        stderr: 'pipe' as const,
+      });
   // Attach before start() so early stderr output is not lost.
-  transport.stderr?.on('data', (d: Buffer) => {
+  transport instanceof StdioClientTransport && transport.stderr?.on('data', (d: Buffer) => {
     capturedStderr += String(d);
     if (capturedStderr.length > 600) capturedStderr = capturedStderr.slice(-600);
   });
@@ -142,7 +145,7 @@ async function startOne(cfg: MCPServerConfig): Promise<void> {
     // not leak into listings.
     state.enabled = true;
     state.down = null;
-    state.pid = transport.pid;
+    state.pid = transport instanceof StdioClientTransport ? transport.pid : null;
     reconnectAttempts.delete(cfg.name);
     log(`${tag} connected (pid=${state.pid}): ${state.tools.length} tool(s) under prefix "${prefix}.*"`);
   } catch (err: any) {
@@ -163,7 +166,7 @@ async function startOne(cfg: MCPServerConfig): Promise<void> {
 
 export async function startAdapters(cfgs: MCPServerConfig[]): Promise<void> {
   for (const cfg of cfgs ?? []) {
-    if (!cfg || !cfg.name || !cfg.command) continue;
+    if (!cfg || !cfg.name || (cfg.transport === 'streamable-http' ? !cfg.url : !cfg.command)) continue;
     await startOne(cfg); // startOne never throws
   }
 }

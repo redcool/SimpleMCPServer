@@ -46,4 +46,4 @@ Blender 资产、导出轴向、Add-on 自动启动、Unity/Godot 导入和引�
 
 ## Unreal MCP（规划）
 
-建议采用与 Blender 相同的分层模式：`src/unreal/unrealAdapter.ts` 负责实例选择、能力探测和调用；`unrealTools.ts` 负责统一注册；再按资产导入、Actor/关卡、材质、动画和验证拆分能力模块。第一阶段应先实现只读 health/capabilities、资产 manifest 和导入任务状态，再加入写操作；所有写操作沿用 `evalEnabled`、`allowedTools`、显式 adapter 选择和不自动重试语义。
+四阶段骨架已完成：`unrealAdapter.ts` 负责实例选择和结果封装；`unrealTools.ts` 提供 health/capabilities；`unrealAssetTools.ts` 提供 manifest/import-status/validation/job；`unrealCapabilityTools.ts` 提供 Level/Actor/Material/Animation；`unrealPipelineTools.ts` 提供 validate/compare/snapshot/smoke-test。写操作要求 `confirm=true` 或 `dryRun=true`，所有调用沿用 `evalEnabled`、`allowedTools`、显式 adapter 选择和不自动重试语义。当前仅完成源码和静态测试，真实 Unreal MCP 端到端验证仍待接入实际 adapter。

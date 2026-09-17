@@ -25,8 +25,14 @@ export interface LLMConfig {
  *  point a second blender-mcp instance at a different Blender socket). */
 export interface MCPServerConfig {
   name: string;
-  command: string;
+  /** stdio executable; use transport=http for URL-based MCP servers. */
+  command?: string;
   args?: string[];
+  /** External MCP transport. Defaults to stdio for backward compatibility. */
+  transport?: 'stdio' | 'streamable-http';
+  /** Streamable HTTP MCP endpoint when transport is streamable-http. */
+  url?: string;
+  headers?: Record<string, string>;
   env?: Record<string, string>;
   enabled?: boolean;
   toolsPrefix?: string;

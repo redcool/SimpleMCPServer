@@ -6,6 +6,7 @@ import { getUnrealTools } from './unreal/unrealTools.js';
 import { getUnrealAssetTools } from './unreal/unrealAssetTools.js';
 import { getUnrealCapabilityTools } from './unreal/unrealCapabilityTools.js';
 import { getUnrealPipelineTools } from './unreal/unrealPipelineTools.js';
+import { getUnrealFractureTools } from './unreal/unrealFractureTools.js';
 import { getBlenderAdvancedTools } from './blender/blenderAdvancedTools.js';
 // ── Server-side tools (bridge management) ──
 
@@ -55,7 +56,7 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
   }
   // External MCP adapter tools (e.g. blender.*) — before bridge tools so the
   // prefix namespace wins over any bridge tool with a colliding name.
-  for (const tool of [...getAdapterTools(), ...getUnrealTools(), ...getUnrealAssetTools(), ...getUnrealCapabilityTools(), ...getUnrealPipelineTools()]) {
+  for (const tool of [...getAdapterTools(), ...getUnrealTools(), ...getUnrealAssetTools(), ...getUnrealCapabilityTools(), ...getUnrealPipelineTools(), ...getUnrealFractureTools()]) {
     // Code-execution tools hide from listings while evalEnabled=false
     if (!cfg.evalEnabled && isDangerAdapterTool(tool.name)) continue;
     if (!isAllowed(tool.name)) continue;

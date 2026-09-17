@@ -30,6 +30,13 @@
             "command": "uvx",
             "args": ["blender-mcp@1.9.1"],
             "toolsPrefix": "blender"
+        },
+        {
+            "name": "unreal",
+            "transport": "streamable-http",
+            "url": "http://127.0.0.1:8000/mcp",
+            "toolsPrefix": "unreal",
+            "enabled": true
         }
     ],
     "webSearch": {

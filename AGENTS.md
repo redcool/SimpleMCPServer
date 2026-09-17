@@ -2,7 +2,7 @@
 
 > 开始任务前阅读本文件。凡涉及功能、协议、工具、配置、测试或运行方式的变更，完成后必须更新本文件，并修改“最后更新”。
 >
-> 最后更新：2026-09-15（Blender 代码归档至 src/blender，统一工具注册并规划 Unreal 适配器分层）
+> 最后更新：2026-09-17（Unreal Streamable HTTP、方案 C fracture 契约、UE 5.8.2 测试资产与 Manifest 验证）
 
 ## 项目定位
 
@@ -61,6 +61,7 @@ npm start
 | `src/blender/blenderAnimWalkSetup.ts` | 非破坏性 Robot_Walk 设置 |
 | `src/config.ts` | 配置、认证、IP、limits |
 | `src/bridgeState.ts` | Bridge 状态、路由、pending 请求 |
+| `src/unreal/` | Unreal MCP 路由、只读能力、资产/job、Level/Actor/材质/动画、pipeline、fracture 方案 C 工具 |
 | `tests/regression.test.cjs` | Server 安全和协议回归测试 |
 | `tests/blender_pipeline.test.cjs` | Blender 工具源码静态测试 |
 | `tests/blender_adapter.test.cjs` | Blender adapter 路由和 schema 静态回归 |
@@ -73,7 +74,3 @@ npm start
 | `docs/development.md` | 构建、测试与已知限制 |
 
 ## 目录分层
-
-`src/blender/` 集中放置 Blender MCP 适配器路由、基础模板、高级工具、manifest、walk setup 和 Action 兼容代码。`src/unreal/` 预留 Unreal MCP 适配器，建议按同样边界拆分 `unrealAdapter.ts`、`unrealTools.ts`、`unrealAssetValidation.ts` 与能力模块；根目录仅保留跨平台 Server、Bridge、配置和 MCP 生命周期代码。
-
-## Blender 工具清单

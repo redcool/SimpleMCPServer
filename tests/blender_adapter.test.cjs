@@ -15,5 +15,5 @@ test('all Blender execution paths use the shared adapter router', () => {
 });
 test('all curated Blender tools expose adapter selection', () => {
   assert.match(tools, /adapter/);
-  assert.match(tools, /getBlenderExportValidationTools/);
+  assert.match(tools, /getBlenderTemplateTools/);
 });
