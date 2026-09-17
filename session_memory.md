@@ -2,17 +2,17 @@
 
 > 作用:记录本仓库开发过程中的**决策**、**踩坑根因**与**操作手册**,供后续会话快速恢复上下文。
 > 更新规则:每次会话结束时追加;踩坑记录必须包含【现象 / 根因 / 修复】三段。
-> 注:本文件含本机路径与内部细节,默认不提交 git(见 .gitignore 的 SessionMemory 段)。
+> 历史记录，不是当前运行状态或操作指南。2026-09-15 核对：本文件实际已被 Git 跟踪；不得写入密钥或密钥片段。当前指南见 [文档索引](docs/README.md)。
 
 ---
 
 ## 0. 项目全貌(一次性看明白)
 
 ```
-AI/Agent ──MCP(SSE /mcp、Streamable HTTP /mcp-stream、直连 JSON-RPC /rpc)──▶ SimpleMcpServer(Node/TS)
+AI/Agent ──MCP GET/POST /mcp-stream；兼容 SSE GET /sse + POST /mcp?sessionId=…；直连 JSON-RPC POST /rpc──▶ SimpleMcpServer(Node/TS)
                                                                                 ├─▶ WebSocket ◀── Unity 桥(SimpleMCPBridge, C#)
-                                                                                │                ├── Godot 桥(SimpleMCPBridge_Godot, GDScript)
-                                                                                ├─▶ WebSocket ◀── /ab 资源包、/rpc 脚本调用
+                                                                                ├─▶ WebSocket ◀── Godot 桥(SimpleMCPBridge_Godot, GDScript)
+                                                                                ├─▶ HTTP /ab 资源包中转；POST /rpc 为独立 JSON-RPC 脚本入口
                                                                                 └─▶ MCP client ──▶ blender-mcp(uvx) ──socket(9876/9877)──▶ Blender addon
 ```
 
@@ -52,7 +52,7 @@ AI/Agent ──MCP(SSE /mcp、Streamable HTTP /mcp-stream、直连 JSON-RPC /rpc
 
 ### D5. 仓库可提交状态(0.0.7.0 + 0.0.7.1,已 push)
 - 用户自行 push;adapter 首连重连修复、死代码清理、README allowedIps 同步。
-- Agnes API key 仅一个,用户评估风险可接受**不轮换**(key 从未进 git,历史扫描干净)。
+- 历史会话曾讨论 Agnes 密钥风险；这不是当前安全证明。整理发现本文件曾保存密钥片段，已移除；是否需要轮换应由密钥持有人依据暴露范围评估。
 
 ---
 
@@ -161,17 +161,17 @@ Get-Content server.log -Tail 20                     # 日志(server.log 已 giti
 
 ## 4. 安全要点
 
-- `config.json` 含**真实 Agnes API key**(`sk-JNA...`)和 serper key —— 已被 .gitignore 覆盖,模板文件只有占位符。任何改动不得把真实 key 写进跟踪文件。
-- `.gitignore` 覆盖:node_modules/、dist/、.env*、config.json、logs/server logs(含 server-run.log、server.log)、ab-cache、mcp-media、**SessionMemory 段(本文件)**。
-- allowedIps 实际 gate:/rpc、/sse、/mcp、WebSocket(1008 Forbidden)**和 /ab**(README 已同步修正)。
-- 服务器默认监听 0.0.0.0:45678,allowedIps=127.0.0.1/::1 —— 局域网可达但工具调用被 IP 白名单挡。
+- `config.json` 可能包含真实 API 密钥，已被 .gitignore 忽略；模板只应包含占位符。2026-09-15 已从本记录移除密钥片段，但这不会清除 Git 历史中的旧内容。
+- `.gitignore` 覆盖 node_modules/、dist/、.env、.env.local、config.json、指定 server 日志、ab-cache、mcp-media；本文件实际已被 Git 跟踪，并没有 SessionMemory 忽略规则。
+- `allowedIps` gate：/rpc、/sse、/mcp、/mcp-stream、/health、WebSocket 和 /ab；可选 `authToken` 还要求 Bearer 认证。
+- 代码回退默认监听 `127.0.0.1:45678`，实际监听地址来自 config.json；不能据历史环境断言当前本机配置。
 
 ---
 
-## 5. 当前状态与待办
+## 5. 截至 0.0.10.1 的历史状态（b2a868d）
 
 - **已完成**:web search 多 provider(serper 实测通)、仓库整理提交 0.0.7.0/0.0.7.1(已 push)、模板工具 8 个全部端到端验证。0.0.8.0 已提交 fdff3ee(用户自行 push);0.0.9.0 `blender.body.build` 已提交 07e6fc0;0.0.10.0 `blender.anim.quadruped`(walk/trot/pace)已提交 d36569f。
 - **本次(0.0.10.1 已提交 b2a868d)**:`mesh.boolean` 实测时发现**通用参数 `target` 与工具自身 `target` 键冲突**(mesh.boolean 的 target 被误当适配器前缀)→ 通用适配器选择参数改名 **`adapter`**,其余工具不受影响;实测 DIFFERENCE 通过(verts 8→16,modifier 已 apply)。新增独立文档 **`docs/blender-mcp-template-tools.md`**(8 工具参数表 + 四足工作流 + FBX 轴验证),README 加链接避免膨胀。新增 `scripts/peek-fbx-axes.mjs`(解析 FBX GlobalSettings 轴 + 顶点 bbox)。
-- **FBX 前向轴实测结论**:`scene.export` 默认 `axis_forward='-Y', axis_up='Z'` 落盘的 FBX,GlobalSettings=UpAxis Z+ / FrontAxis Y+,网格顶点包围盒与 Blender 场景逐位一致(dog x[-0.42,0.42] y[-0.92,1.0] z[0,0.86])——**几何不做轴交换**,朝向仅由 GlobalSettings 声明,Unity 侧按 Bake Axis Conversion 处理,首次导入需目检朝向定一次性映射约定。
+- 历史 FBX 轴向记录仅适用于当时 dog 资产和环境；当前导出代码未显式传入 axis_forward/axis_up，Unity 导入需按实际版本和 Importer 设置核验。
 - **待办**:Unity/Godot 桥修复(P7);README 模板工具 config 示例;(可选)方案 B 深度封装(改 blender-mcp server.py + addon 加原生 @mcp.tool)。
 - **环境事实**:Blender 5.2.0(新 Action API)、uvx blender-mcp@1.9.1、addon v1.6、协议 v5 匹配;`bridgeConnected:false` 是正常的(桥未连时)。

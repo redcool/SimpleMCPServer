@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const files = ['blenderTemplateTools.ts', 'blenderAdvancedTools.ts'].map((name) => path.join(root, 'src', name)).filter(fs.existsSync);
+const files = ['blenderTemplateTools.ts', 'blenderAdvancedTools.ts'].map((name) => path.join(root, 'src', 'blender', name)).filter(fs.existsSync);
 const source = files.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 function requireFeature(label, ...patterns) { assert.ok(source, 'Blender source files must be present'); assert.ok(patterns.some((p) => p.test(source)), 'missing Blender feature: ' + label); }
 test('export presets: Unity, Unreal, Godot', () => {

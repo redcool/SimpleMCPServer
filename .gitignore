@@ -34,3 +34,4 @@ config.json
 
 # MCP adapter runtime media (screenshots from external MCP servers e.g. Blender)
 /mcp-media
+/tmp

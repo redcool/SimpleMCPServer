@@ -1,8 +1,10 @@
 import { getCachedConfig } from './config.js';
 import { bridges, toolToBridge } from './bridgeState.js';
 import { getAdapterTools, isDangerAdapterTool } from './mcpAdapter.js';
-import { getBlenderTemplateTools } from './blenderTemplateTools.js';
-import { getBlenderAdvancedTools } from './blenderAdvancedTools.js';
+import { getBlenderTemplateDefinitions } from './blender/blenderTemplateTools.js';
+import { getBlenderAdvancedTools } from './blender/blenderAdvancedTools.js';
+import { getBlenderExportValidationTools } from './blender/blenderExportValidation.js';
+import { getBlenderWalkTools } from './blender/blenderAnimWalkSetup.js';
 // ── Server-side tools (bridge management) ──
 
 const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
@@ -64,7 +66,7 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
   // They execute code inside Blender, so they follow the same evalEnabled gate
   // as other code-execution tools.
   if (cfg.evalEnabled) {
-    for (const tool of [...getBlenderTemplateTools(), ...getBlenderAdvancedTools().map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))]) {
+    for (const tool of [...getBlenderTemplateDefinitions(), ...getBlenderAdvancedTools(), ...getBlenderExportValidationTools(), ...getBlenderWalkTools()]) {
       if (!isAllowed(tool.name)) continue;
       if (!seen.has(tool.name)) {
         seen.add(tool.name);

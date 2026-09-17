@@ -109,6 +109,14 @@ Blender 默认场景前向是 **-Y**(四足头朝 -Y,骨架 +Y=尾/臀)。`blend
 
 ---
 
+## 当前维护边界（以当前源码为准）
+
+- 本文最初的 8 个模板工具清单是历史记录；当前源码还注册基础模板、13 个高级工具、导出 manifest 比对和 walk_setup。请以 `tools/list` 与源码为准，不能把旧表的“已验证”外推到新增工具。
+- `adapter` 参数目前由基础模板工具注入；高级、manifest/compare_manifest 与 walk_setup 不保证按该参数选择实例，默认走配置中的首个可用适配器。
+- `blender.scene.export` 的 `preset` 优先于 `format`，`validateOnly` 只做有限场景摘要，不等于 Unity/Unreal/Godot 导入验证。当前导出调用未显式固定轴参数；FBX 轴与引擎导入结论仅是历史实测，需按目标版本复核。
+- Blender 5.2 的 `Action.fcurves` 兼容性并非所有工具都解决：`anim.list/info` 及若干高级检查/修复工具仍直接访问该属性，相关工具应视为待复核。
+- 相关维护说明见 [`integrations.md`](integrations.md)、[`configuration.md`](configuration.md)、[`development.md`](development.md)。
+
 ## 已知坑(Blender 5.2 实测)
 
 1. **`Action.fcurves` 已移除**:Blender 4.x 引入 Action Slots/layers,5.2 删除旧 API。模板内部一律用"删旧 action → `actions.new()` → `keyframe_insert` 自动建 fcurve"的新写法,工作正常。

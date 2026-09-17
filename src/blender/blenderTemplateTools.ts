@@ -15,8 +15,8 @@
 //   - All names/locations are injected via JSON.stringify (safe literals).
 //   - Every template ends with a print(JSON) summary so the caller knows what
 //     happened and is reminded to verify with get_viewport_screenshot.
-import { getCachedConfig } from './config.js';
-import { isAdapterTool, callAdapterTool } from './mcpAdapter.js';
+import { executeBlenderCode } from './blenderAdapter.js';
+import { BLENDER_ACTION_COMPAT } from './blenderActionCompat.js';
 
 export interface BlenderTemplateTool {
   name: string;
@@ -36,9 +36,10 @@ const pyfloat = (v: unknown, dflt: number): number => {
 };
 const pybool = (v: unknown, dflt: boolean): string => (typeof v === 'boolean' ? (v ? 'True' : 'False') : dflt ? 'True' : 'False');
 
-/** Append the standard verification reminder to a bpy script body. */
+/** Append the shared Action helper without hiding an existing JSON summary. */
 function withVerify(body: string, summaryExpr: string): string {
-  return `${body}\nimport json\nprint(json.dumps(${summaryExpr}))\nprint("DONE — verify visually with blender.get_viewport_screenshot")`;
+  const summary = summaryExpr === '{}' ? '' : '\nprint(json.dumps(' + summaryExpr + ', ensure_ascii=False))';
+  return BLENDER_ACTION_COMPAT + '\nimport json\n' + body + summary + '\nprint("DONE — verify visually with blender.get_viewport_screenshot")';
 }
 
 // ── RIGGING ──
@@ -196,15 +197,10 @@ const ANIM_LOOP: BlenderTemplateTool = {
 rig = bpy.data.objects.get(${rigArg})
 if rig is None or rig.type != 'ARMATURE':
     raise RuntimeError('armature not found (pass rig="<name>")')
-# Blender 5.x removed Action.fcurves (Action Slots/layers API), so the old
-# "clear fcurves then re-key" pattern no longer works. Rebuild the action
-# instead: remove any previous copy and let keyframe_insert create fcurves.
-old_action = bpy.data.actions.get(${actionName})
-if old_action is not None:
-    bpy.data.actions.remove(old_action)
+# Create a fresh Action; never delete a same-named Action used by another rig/NLA.
+# Blender assigns a unique name on collision; report that actual name.
 action = bpy.data.actions.new(${actionName})
 rig.animation_data_create()
-old_action = rig.animation_data.action
 rig.animation_data.action = action
 MOTION = ${pystr(motion)}
 AMP = ${amp}
@@ -214,8 +210,10 @@ def need(*names):
     missing = [n for n in names if n not in bones]
     if missing:
         raise RuntimeError('required bones missing for motion template: ' + ', '.join(missing))
+for pb in rig.pose.bones:
+    pb.rotation_mode = 'XYZ'
 for f in range(FRAMES):
-    t = f / FRAMES * math.tau
+    t = f / (FRAMES - 1) * math.tau
     bpy.context.scene.frame_set(f)
     if MOTION == 'idle':
         need('spine', 'chest', 'head', 'upper_arm.L', 'upper_arm.R')
@@ -235,18 +233,9 @@ for f in range(FRAMES):
         bones['upper_arm.R'].rotation_euler.x = -0.4 * AMP * math.sin(t + math.pi)
         bones['spine'].rotation_euler.x = 0.05 * AMP * math.cos(t + 1.5)
     for pb in rig.pose.bones:
-        if pb.rotation_euler != (0.0, 0.0, 0.0):
-            pb.keyframe_insert(data_path='rotation_euler', frame=f)
-# end frame copies frame 0 for a seamless loop
-bpy.context.scene.frame_set(FRAMES - 1)
-f0 = {}
-for pb in rig.pose.bones:
-    f0[pb.name] = pb.rotation_euler.copy()
+        pb.keyframe_insert(data_path='rotation_euler', frame=f)
+# Inclusive endpoints retain the original first pose and close the loop.
 bpy.context.scene.frame_set(0)
-for pb in rig.pose.bones:
-    if pb.name in f0:
-        pb.rotation_euler = f0[pb.name]
-        pb.keyframe_insert(data_path='rotation_euler', frame=0)
 print(json.dumps({'rig': rig.name, 'action': action.name, 'motion': MOTION, 'frames': FRAMES}, ensure_ascii=False))
 print("DONE — verify visually with blender.get_viewport_screenshot")`,
       `{'rig': rig.name, 'action': action.name, 'motion': MOTION, 'frames': FRAMES}`,
@@ -293,10 +282,7 @@ const QUAD_ANIM: BlenderTemplateTool = {
 rig = bpy.data.objects.get(${rigArg})
 if rig is None or rig.type != 'ARMATURE':
     raise RuntimeError('armature not found (pass rig="<name>")')
-# Rebuild the action (Blender 5.x removed Action.fcurves — see ANIM_LOOP).
-old_action = bpy.data.actions.get(${actionName})
-if old_action is not None:
-    bpy.data.actions.remove(old_action)
+# Create a fresh Action without deleting another rig/NLA user's Action.
 action = bpy.data.actions.new(${actionName})
 rig.animation_data_create()
 rig.animation_data.action = action
@@ -329,7 +315,7 @@ need('pelvis', 'spine2', 'shoulder', 'head', 'neck1', 'tail1', 'tail2', 'tail3',
 for pb in rig.pose.bones:
     pb.rotation_mode = 'XYZ'
 for f in range(FRAMES):
-    t = f / FRAMES * math.tau
+    t = f / (FRAMES - 1) * math.tau
     bpy.context.scene.frame_set(f)
     for root, (knee, ankle) in LEGS.items():
         ph = P[root]
@@ -346,10 +332,9 @@ for f in range(FRAMES):
     bones['tail2'].rotation_euler.z = WAG * 0.8 * math.sin(2.0 * t + 1.2)
     bones['tail3'].rotation_euler.z = WAG * 0.6 * math.sin(2.0 * t + 1.4)
     for pb in rig.pose.bones:
-        if pb.rotation_euler != (0.0, 0.0, 0.0):
-            pb.keyframe_insert(data_path='rotation_euler', frame=f)
-        if pb.location != (0.0, 0.0, 0.0):
-            pb.keyframe_insert(data_path='location', frame=f)
+        pb.keyframe_insert(data_path='rotation_euler', frame=f)
+    bones['pelvis'].keyframe_insert(data_path='location', frame=f)
+bpy.context.scene.frame_set(0)
 print(json.dumps({'rig': rig.name, 'action': action.name, 'gait': GAIT, 'frames': FRAMES}, ensure_ascii=False))
 print("DONE — verify visually with blender.get_viewport_screenshot")`,
       `{'rig': rig.name, 'action': action.name, 'gait': GAIT, 'frames': FRAMES}`,
@@ -484,7 +469,7 @@ const SCENE_EXPORT: BlenderTemplateTool = {
     return withVerify(
       `import bpy, json, os
 scene = bpy.context.scene
-out = ${path}
+out = ${path || 'None'}
 if not out:
     out = os.path.join('C:/tmp', (scene.name or 'scene') + ('.fbx' if '${fmt}' == 'fbx' else '.glb'))
 validation = {'format': '${fmt}', 'preset': '', 'scene': scene.name, 'objects': len(scene.objects)}
@@ -500,7 +485,7 @@ else:
     validation.update({'valid': os.path.exists(out), 'path': out, 'bytes': size})
     print(json.dumps(validation, ensure_ascii=False))
 print("DONE — export validation complete")`,
-      `{'format': '${fmt}', 'path': out, 'bytes': size}`,
+      `{'format': '${fmt}', 'path': out, 'bytes': (size if 'size' in locals() else 0)}`,
     );
   },
 };
@@ -903,9 +888,9 @@ const UV_CHECK: BlenderTemplateTool = { name: 'blender.uv.check', description: '
 
 const RIG_VALIDATE: BlenderTemplateTool = { name: 'blender.rig.validate', description: 'Validate armature modifier and weighted vertices.', inputSchema: { type: 'object', properties: { mesh: { type: 'string' }, rig: { type: 'string' } } }, buildCode(a) { const m = a.mesh ? pystr(a.mesh) : 'bpy.context.active_object.name'; const r = a.rig ? pystr(a.rig) : 'None'; return withVerify("import bpy\nimport json\nmesh=bpy.data.objects.get("+m+")\nrig=bpy.data.objects.get("+r+") if "+r+" else None\nif mesh is None or rig is None: raise RuntimeError('mesh and rig are required')\nmods=[x for x in mesh.modifiers if x.type=='ARMATURE' and x.object==rig]\nweighted=sum(1 for v in mesh.data.vertices if v.groups)\nissues=[]\nif not mods: issues.append('missing_armature_modifier')\nif len(rig.data.bones)==0: issues.append('no_bones')\nif weighted<len(mesh.data.vertices): issues.append('unweighted_vertices')\nprint(json.dumps({'mesh':mesh.name,'rig':rig.name,'bones':len(rig.data.bones),'vertices':len(mesh.data.vertices),'weighted':weighted,'issues':issues,'valid':not issues},ensure_ascii=False))", '{}'); } };
 
-const ANIM_LIST: BlenderTemplateTool = { name: 'blender.anim.list', description: 'List Blender actions with frame ranges and F-curve counts.', inputSchema: { type: 'object', properties: {} }, buildCode() { return withVerify("import bpy\nimport json\nprint(json.dumps({'actions':[{'name':a.name,'start':a.frame_start,'end':a.frame_end,'fcurves':len(a.fcurves)} for a in bpy.data.actions]},ensure_ascii=False))", '{}'); } };
+const ANIM_LIST: BlenderTemplateTool = { name: 'blender.anim.list', description: 'List Blender actions with frame ranges and F-curve counts.', inputSchema: { type: 'object', properties: {} }, buildCode() { return withVerify("import bpy\nimport json\nprint(json.dumps({'actions':[{'name':a.name,'start':a.frame_start,'end':a.frame_end,'fcurves':len(action_fcurves(a))} for a in bpy.data.actions]},ensure_ascii=False))", '{}'); } };
 
-const ANIM_INFO: BlenderTemplateTool = { name: 'blender.anim.info', description: 'Inspect one action.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] }, buildCode(a) { const ac = pystr(a.action); return withVerify("import bpy\nimport json\na=bpy.data.actions.get("+ac+")\nif a is None: raise RuntimeError('action not found')\nprint(json.dumps({'name':a.name,'start':a.frame_start,'end':a.frame_end,'fcurves':len(a.fcurves)},ensure_ascii=False))", '{}'); } };
+const ANIM_INFO: BlenderTemplateTool = { name: 'blender.anim.info', description: 'Inspect one action.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] }, buildCode(a) { const ac = pystr(a.action); return withVerify("import bpy\nimport json\na=bpy.data.actions.get("+ac+")\nif a is None: raise RuntimeError('action not found')\nprint(json.dumps({'name':a.name,'start':a.frame_start,'end':a.frame_end,'fcurves':len(action_fcurves(a))},ensure_ascii=False))", '{}'); } };
 
 const EXPORT_VALIDATE: BlenderTemplateTool = { name: 'blender.export.validate', description: 'Validate target export prerequisites for Unity, Unreal or Godot.', inputSchema: { type: 'object', properties: { preset: { type: 'string', enum: ['unity','unreal','godot'] } }, required: ['preset'] }, buildCode(a) { const p = pystr(String(a.preset || 'godot').toLowerCase()); return withVerify("import bpy\nimport json\npreset="+p+"\nobjs=list(bpy.context.scene.objects)\nissues=[]\nif not objs: issues.append('empty_scene')\nif not any(x.type=='MESH' for x in objs): issues.append('missing_mesh')\nprint(json.dumps({'preset':preset,'objects':len(objs),'format':'glb' if preset=='godot' else 'fbx','issues':issues,'valid':not issues},ensure_ascii=False))", '{}'); } };
 
@@ -932,42 +917,9 @@ const TOOLS: BlenderTemplateTool[] = [
   BODY_BUILD,
 ];
 
+export function getBlenderTemplateDefinitions(): BlenderTemplateTool[] { return TOOLS; }
+
 const ADAPTER_PROPERTY = { type: 'string', description: '目标 Blender 适配器前缀，例如 blender 或 blender2；省略则使用配置中的第一个可用实例' };
-
-export function getBlenderTemplateTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
-  return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: { ...t.inputSchema, properties: { ...(t.inputSchema.properties as Record<string, unknown> ?? {}), adapter: ADAPTER_PROPERTY } } }));
-}
-
-export function isBlenderTemplateTool(toolName: string): boolean {
-  return TOOLS.some((t) => t.name === toolName);
-}
-
-/**
- * Execute a curated Blender template on the first connected Blender adapter
- * (config.mcpServers order, e.g. blender → blender2). Respects evalEnabled — the
- * underlying channel is arbitrary code execution.
- */
-export async function runBlenderTemplateTool(toolName: string, args: Record<string, unknown>): Promise<string> {
-  const tool = TOOLS.find((t) => t.name === toolName);
-  if (!tool) throw new Error(`unknown blender template tool: ${toolName}`);
-  const cfg = getCachedConfig();
-  const configured = (cfg.mcpServers ?? []).map((s) => s.toolsPrefix ?? s.name);
-  const requested = typeof args.adapter === 'string' && args.adapter.trim() ? args.adapter.trim() : undefined;
-  const prefixes = requested ? [requested] : configured;
-  let code: string;
-  try {
-    code = tool.buildCode(args);
-  } catch (err: any) {
-    throw new Error(`${toolName}: ${err?.message ?? String(err)}`);
-  }
-  for (const prefix of prefixes) {
-    const execTool = `${prefix}.execute_blender_code`;
-    if (isAdapterTool(execTool)) {
-      const text = await callAdapterTool(execTool, { code });
-      return text;
-    }
-  }
-  throw new Error(
-    `${toolName}: no connected Blender adapter${requested ? ` for target '${requested}'` : ''} — checked prefixes: ${prefixes.join(', ') || '(none configured)'}`,
-  );
-}
+export function getBlenderTemplateTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> { return TOOLS.map(t => ({ name:t.name, description:t.description, inputSchema:{ ...t.inputSchema, properties:{ ...((t.inputSchema.properties ?? {}) as Record<string, unknown>), adapter: ADAPTER_PROPERTY } } })); }
+export function isBlenderTemplateTool(toolName: string): boolean { return TOOLS.some(t => t.name === toolName); }
+export async function runBlenderTemplateTool(toolName: string, args: Record<string, unknown>): Promise<string> { const tool=TOOLS.find(t=>t.name===toolName); if(!tool) throw new Error('unknown blender template tool: '+toolName); return executeBlenderCode(args, tool.buildCode(args)); }

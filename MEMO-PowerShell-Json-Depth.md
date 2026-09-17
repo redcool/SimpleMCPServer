@@ -44,5 +44,8 @@ $body | ConvertTo-Json -Compress -Depth 10
 
 ## 检测方法
 
+> 历史诊断记录：Android `adb logcat` 仅适用于连接 Unity Bridge 的场景。通用做法是发送前检查序列化结果，并确认服务端收到的值仍为数组；调用前请通过 `tools/list` 核对实际工具名和 schema。
+
+
 在 Android 上跑 `adb logcat -s Unity`，搜 `[ParseJsonObject]` 查看 `valueStr`。
 如果数组变成了空格分隔的字符串（如 `"2 3 4"`），就是此问题。

@@ -28,8 +28,8 @@ import {
 } from './bridgeState.js';
 import { getMergedTools } from './tools.js';
 import { searchWeb, getSearchProviderSummary } from './websearch.js';
-import { isBlenderTemplateTool, runBlenderTemplateTool } from './blenderTemplateTools.js';
-import { getBlenderAdvancedTools, isBlenderAdvancedTool, runBlenderAdvancedTool } from './blenderAdvancedTools.js';
+import { isBlenderTemplateTool, runBlenderTemplateTool } from './blender/blenderTemplateTools.js';
+import { getBlenderAdvancedTools, isBlenderAdvancedTool, runBlenderAdvancedTool } from './blender/blenderAdvancedTools.js';
 import { handleABRequest } from './ab.js';
 import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool, getAdapterHealth } from './mcpAdapter.js';
 
