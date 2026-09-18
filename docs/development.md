@@ -19,6 +19,8 @@ npm start              # 运行 dist/index.js
 | `tests/regression.test.cjs` | 否 | 配置安全、加密、工具合并、pending 请求等模块回归 |
 | `tests/blender_pipeline.test.cjs` | 否 | `src/blender/` Blender 工具源码静态特征检查，不执行 bpy |
 | `tests/blender_adapter.test.cjs` | 否 | adapter 路由、schema 和 Action API 兼容脚本静态回归 |
+| `tests/blender_adapter_behavior.test.cjs` | 否 | 显式/默认 adapter 选择、参数剥离、MCP/RPC 结果封装行为测试 |
+| `tests/blender_action_compat.test.cjs` | 需要 Blender 5.2（缺失时跳过） | factory-startup 隔离场景验证 layered Action、manifest、loop 和保留既有 Action |
 | `tests/test-e2e.cjs` | 需要 Server，通常还需 Bridge | HTTP `/rpc` 初始化、工具列表和场景查询 |
 | `tests/test-playmode-cycle.cjs` | 需要 Unity Bridge | Play Mode 进出和重连 |
 | `tests/auto-test-android.ps1` | 需要 Android/Unity 环境 | 平台测试脚本 |
@@ -35,7 +37,7 @@ npm start              # 运行 dist/index.js
 
 ## 已知限制（当前工作树核对）
 
-1. Blender Action 曲线通过共享兼容 helper 读取旧式 `fcurves` 或 4.x/5.x layered Action channelbags；当前已静态验证，完整 Action 工具端到端实测仍需在目标 Blender 版本执行。
+1. Blender Action 曲线通过共享兼容 helper 读取旧式 `fcurves` 或 4.x/5.x layered Action channelbags；已在 Blender 5.2.0 `--background --factory-startup` 隔离场景验证 list/info/loop/root motion/manifest 及 loop 生成。
 2. 所有内置 `src/blender/` Blender 工具现在通过共享 adapter 路由；指定 `adapter` 时不会静默切换实例。路由静态测试不代表真实 Blender 执行成功。
 3. 导出 preset/validateOnly 的语义应以当前源码为准；validateOnly 只返回场景摘要，不代表 Unity/Unreal/Godot 导入成功。
 4. `/health` 的 `totalTools` 是 Bridge 路由统计，不是合并后的全部工具数量。

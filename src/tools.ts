@@ -1,13 +1,12 @@
 import { getCachedConfig } from './config.js';
 import { bridges, toolToBridge } from './bridgeState.js';
 import { getAdapterTools, isDangerAdapterTool } from './mcpAdapter.js';
-import { getBlenderTemplateTools } from './blender/blenderTemplateTools.js';
+import { getCuratedBlenderTools } from './blender/blenderTools.js';
 import { getUnrealTools } from './unreal/unrealTools.js';
 import { getUnrealAssetTools } from './unreal/unrealAssetTools.js';
 import { getUnrealCapabilityTools } from './unreal/unrealCapabilityTools.js';
 import { getUnrealPipelineTools } from './unreal/unrealPipelineTools.js';
 import { getUnrealFractureTools } from './unreal/unrealFractureTools.js';
-import { getBlenderAdvancedTools } from './blender/blenderAdvancedTools.js';
 // ── Server-side tools (bridge management) ──
 
 const SERVER_TOOLS: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
@@ -65,16 +64,12 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
       merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
     }
   }
-  // Curated Blender template tools (blender.rig.*, blender.anim.*, ...).
-  // They execute code inside Blender, so they follow the same evalEnabled gate
-  // as other code-execution tools.
+  // Curated Blender template, advanced, manifest and walk tools share one schema/router.
   if (cfg.evalEnabled) {
-    for (const tool of [...getBlenderTemplateTools(), ...getBlenderAdvancedTools().map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))]) {
-      if (!isAllowed(tool.name)) continue;
-      if (!seen.has(tool.name)) {
-        seen.add(tool.name);
-        merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
-      }
+    for (const tool of getCuratedBlenderTools()) {
+      if (!isAllowed(tool.name) || seen.has(tool.name)) continue;
+      seen.add(tool.name);
+      merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
     }
   }
   // Merge bridge tools (last-registration-wins) — annotate the current routing target
@@ -83,13 +78,9 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
       if (!cfg.evalEnabled && tool.name === 'editor.eval') continue;
       if (!seen.has(tool.name)) {
         seen.add(tool.name);
-        // Determine which bridge this tool currently routes to (toolToBridge holds the
-        // last-registration-wins target — the bridge an actual call would hit).
         const targetId = toolToBridge.get(tool.name);
         const targetInfo = targetId ? bridges.get(targetId) : undefined;
-        const sourceTag = targetInfo && targetId
-          ? `[bridge: ${targetInfo.clientIp}:${targetInfo.clientPort} (${targetId.slice(0, 8)})] `
-          : '';
+        const sourceTag = targetInfo && targetId ? `[bridge: ${targetInfo.clientIp}:${targetInfo.clientPort} (${targetId.slice(0, 8)})] ` : '';
         merged.push({ ...tool, description: sourceTag + tool.description, inputSchema: tool.inputSchema ?? { type: 'object' } });
       }
     }

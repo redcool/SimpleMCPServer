@@ -28,8 +28,7 @@ import {
 } from './bridgeState.js';
 import { getMergedTools } from './tools.js';
 import { searchWeb, getSearchProviderSummary } from './websearch.js';
-import { isBlenderTemplateTool, runBlenderTemplateTool } from './blender/blenderTemplateTools.js';
-import { getBlenderAdvancedTools, isBlenderAdvancedTool, runBlenderAdvancedTool } from './blender/blenderAdvancedTools.js';
+import { isCuratedBlenderTool, callCuratedBlenderMcp, callCuratedBlenderRpc } from './blender/blenderTools.js';
 import { isCuratedUnrealTool, runCuratedUnrealTool } from './unreal/unrealTools.js';
 import { isUnrealAssetTool, runUnrealAssetTool } from './unreal/unrealAssetTools.js';
 import { runUnrealCapabilityTool } from './unreal/unrealCapabilityTools.js';
@@ -137,35 +136,9 @@ export async function main(): Promise<void> {
     }
 
     // ── Curated Blender template tools (blender.rig.*, blender.anim.*, ...) ──
-    // They run pre-written bpy code through the connected Blender adapter, so
-    // they respect the same evalEnabled gate as other code-execution tools.
-    if (isBlenderAdvancedTool(toolName)) {
-      if (!getCachedConfig().evalEnabled) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Blender advanced tools are disabled (evalEnabled=false)' }) }], isError: true };
-      try { const text = await runBlenderAdvancedTool(toolName, args, async (code) => {
-        const cfg = getCachedConfig();
-        const prefixes = (cfg.mcpServers ?? []).map(s => s.toolsPrefix ?? s.name);
-        for (const prefix of prefixes) { const name = `${prefix}.execute_blender_code`; if (isAdapterTool(name)) return callAdapterTool(name, { code }); }
-        throw new Error('no connected Blender adapter');
-      }); return { content: [{ type: 'text' as const, text }] }; } catch (err: any) { return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }], isError: true }; }
-    }
+    // All curated Blender families share adapter selection, argument policy and MCP result shape.
+    if (isCuratedBlenderTool(toolName)) return callCuratedBlenderMcp(toolName, args);
 
-    if (isBlenderTemplateTool(toolName)) {
-      if (!getCachedConfig().evalEnabled) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Blender template tools are disabled (evalEnabled=false)' }) }],
-          isError: true,
-        };
-      }
-      try {
-        const text = await runBlenderTemplateTool(toolName, args);
-        return { content: [{ type: 'text' as const, text }] };
-      } catch (err: any) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }],
-          isError: true,
-        };
-      }
-    }
 
     if (isCuratedUnrealTool(toolName) || isUnrealAssetTool(toolName) || isUnrealFractureTool(toolName) || toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.') || toolName.startsWith('unreal.pipeline.')) {
       try {
@@ -931,61 +904,10 @@ export async function main(): Promise<void> {
         }
       }
 
-      // ── Curated Blender template tools (blender.rig.*, blender.anim.*, ...) ──
-      if (isBlenderAdvancedTool(toolName)) {
-      if (!getCachedConfig().evalEnabled) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Blender advanced tools are disabled (evalEnabled=false)' }) }], isError: true };
-      try { const text = await runBlenderAdvancedTool(toolName, args, async (code) => {
-        const cfg = getCachedConfig();
-        const prefixes = (cfg.mcpServers ?? []).map(s => s.toolsPrefix ?? s.name);
-        for (const prefix of prefixes) { const name = `${prefix}.execute_blender_code`; if (isAdapterTool(name)) return callAdapterTool(name, { code }); }
-        throw new Error('no connected Blender adapter');
-      }); return { content: [{ type: 'text' as const, text }] }; } catch (err: any) { return { content: [{ type: 'text' as const, text: JSON.stringify({ error: err?.message ?? String(err) }) }], isError: true }; }
-    }
-
-    if (isBlenderTemplateTool(toolName)) {
-        if (!getCachedConfig().evalEnabled) {
-          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Blender template tools are disabled (evalEnabled=false)' } };
-        }
-        try {
-          const text = await runBlenderTemplateTool(toolName, args);
-          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
-        } catch (err: any) {
-          const reason = err instanceof Error ? err.message : String(err);
-          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: reason } };
-        }
-      }
-
-      if (isCuratedUnrealTool(toolName) || isUnrealAssetTool(toolName) || isUnrealFractureTool(toolName) || toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.') || toolName.startsWith('unreal.pipeline.')) {
-        try {
-          let text: string;
-          if (isCuratedUnrealTool(toolName)) text = await runCuratedUnrealTool(toolName, args);
-          else if (isUnrealAssetTool(toolName)) text = await runUnrealAssetTool(toolName, args);
-          else if (isUnrealFractureTool(toolName)) text = await runUnrealFractureTool(toolName, args);
-          else if (toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.')) text = await runUnrealCapabilityTool(toolName, args);
-          else text = await runUnrealPipelineTool(toolName, args);
-          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
-        } catch (err: any) { return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err?.message ?? String(err) } }; }
-      }
+      // All curated Blender families share adapter selection, argument policy and JSON-RPC result shape.
+      if (isCuratedBlenderTool(toolName)) return callCuratedBlenderRpc(msg.id, toolName, args);
 
 
-      // ── Enforce evalEnabled on execution too (listing filter is not a gate) ──
-      if (toolName === 'editor.eval' && !getCachedConfig().evalEnabled) {
-        return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'editor.eval is disabled (evalEnabled=false)' } };
-      }
-
-      // ── External MCP adapter tools (e.g. blender.*) — proxy to the adapter's server ──
-      if (isAdapterTool(toolName)) {
-        // Code-execution tools respect evalEnabled on execution too
-        if (isDangerAdapterTool(toolName) && !getCachedConfig().evalEnabled) {
-          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'code-execution tool is disabled (evalEnabled=false)' } };
-        }
-        try {
-          const text = await callAdapterTool(toolName, args);
-          return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
-        } catch (err: any) {
-          return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err?.message ?? String(err) } };
-        }
-      }
 
       // ── Bridge-registered tools ──
       const bridgeId = toolToBridge.get(toolName);

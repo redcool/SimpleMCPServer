@@ -2,7 +2,7 @@
 
 SimpleMcpServer 内置一组**高层 Blender 模板工具**(方案 A:不 fork blender-mcp,在服务端生成预写好的 bpy 脚本,经 `blender.<prefix>.execute_blender_code` 发送给 Blender addon 执行)。AI 只需提供业务参数,不必手写 Python。
 
-> 前置:见 README「外部 MCP 适配器」接入 BlenderMCP(uvx `blender-mcp@1.9.1` 实测)。所有模板工具均受 `config.evalEnabled` 门控(列表隐藏 + 执行拒绝双保险),且每个工具都接受通用参数 `adapter` 指定目标实例前缀(`blender`/`blender2`…,省略则用配置里第一个可用实例)。
+> 前置:见 README「外部 MCP 适配器」接入 BlenderMCP(uvx `blender-mcp@1.9.1` 工作区实测)。基础模板、高级、导出 manifest/compare、walk 工具均由 `src/blender/blenderTools.ts` 统一注册和执行；受 `config.evalEnabled` 门控(列表隐藏 + 执行拒绝双保险)，每个工具接受 `adapter` 指定目标实例前缀，省略则按配置顺序选择第一个在线实例；显式目标不可用时不会静默切换。
 
 ## 工具清单
 

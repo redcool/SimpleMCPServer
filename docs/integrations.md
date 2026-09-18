@@ -42,7 +42,7 @@ Server 作为 MCP Client 启动 `mcpServers` 中的 stdio 子进程；适配器�
 
 ## 不要把历史实测当保证
 
-Blender 资产、导出轴向、Add-on 自动启动、Unity/Godot 导入和引擎回归都需要按当前版本实际验证。本仓库的静态测试不证明外部软件行为。
+Blender Action/manifest 脚本已在本机 Blender 5.2.0 `--background --factory-startup` 隔离场景验证；这不等于当前 Add-on socket、真实用户资产、导出轴向或 Unity/Godot/Unreal 导入回归已验证。
 
 ## Unreal MCP（规划）
 

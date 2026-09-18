@@ -2,7 +2,7 @@
 
 > 开始任务前阅读本文件。凡涉及功能、协议、工具、配置、测试或运行方式的变更，完成后必须更新本文件，并修改“最后更新”。
 >
-> 最后更新：2026-09-17（Unreal Streamable HTTP、方案 C fracture 契约、UE 5.8.2 测试资产与 Manifest 验证）
+> 最后更新：2026-09-17（Blender MCP 统一路由、MCP/RPC 结果封装与 Blender 5.2 Action 隔离验证）
 
 ## 项目定位
 
@@ -65,6 +65,8 @@ npm start
 | `tests/regression.test.cjs` | Server 安全和协议回归测试 |
 | `tests/blender_pipeline.test.cjs` | Blender 工具源码静态测试 |
 | `tests/blender_adapter.test.cjs` | Blender adapter 路由和 schema 静态回归 |
+| `tests/blender_adapter_behavior.test.cjs` | Blender adapter 选择和 MCP/RPC 结果行为回归 |
+| `tests/blender_action_compat.test.cjs` | Blender 5.2 隔离 Action/manifest 集成验证 |
 | `docs/blender-mcp-template-tools.md` | Blender 工具说明 |
 | `session_memory.md` | 历史决策、坑和会话恢复信息 |
 | `docs/README.md` | 当前文档索引与历史/当前边界 |
