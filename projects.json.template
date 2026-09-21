@@ -1,0 +1,58 @@
+{
+    "engines": [
+        {
+            "name": "unity2022",
+            "type": "unity",
+            "exe": "D:/Path/To/Unity/Editor/Unity.exe"
+        },
+        {
+            "name": "godot47",
+            "type": "godot",
+            "exe": "D:/Path/To/Godot/Godot_v4.7-stable_mono_win64.exe"
+        },
+        {
+            "name": "blender52",
+            "type": "blender",
+            "exe": "H:/Path/To/blender/blender.exe"
+        },
+        {
+            "name": "ue582",
+            "type": "unreal",
+            "exe": "D:/Path/To/UE/5.8/Engine/Binaries/Win64/UnrealEditor.exe"
+        }
+    ],
+    "projects": [
+        {
+            "name": "FeiTuTeamPrj",
+            "engine": "unity2022",
+            "dir": "H:/Path/To/FeiTuTeamPrj",
+            "isInstallBridge": true
+        },
+        {
+            "name": "TestAIMcpPrj",
+            "engine": "unity2022",
+            "dir": "H:/Path/To/TestAIMcpPrj",
+            "isInstallBridge": true
+        },
+        {
+            "name": "godot_prj1",
+            "engine": "godot47",
+            "dir": "H:/Path/To/godot_prj1",
+            "isInstallBridge": true
+        },
+        {
+            "name": "TestUnrealMcpPrj",
+            "engine": "ue582",
+            "dir": "H:/Path/To/TestUnrealMcpPrj",
+            "uproject": "TestUnrealMcpPrj.uproject",
+            "mcpPort": 8000,
+            "isInstallBridge": true
+        },
+        {
+            "name": "blender_default",
+            "engine": "blender52",
+            "dir": "H:/Path/To/blender_assets",
+            "isInstallBridge": true
+        }
+    ]
+}

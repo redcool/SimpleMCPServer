@@ -8,6 +8,7 @@
 - [后端接入](integrations.md)：Unity/Godot Bridge、BlenderMCP 和多实例。
 - [开发与验证](development.md)：构建、测试、E2E 前置条件与已知限制。
 - [Blender 模板工具](blender-mcp-template-tools.md)：工具参数和工作流；状态标记以源码和实际测试为准。
+- [项目与 Bridge 安装指南](projects-bridge-guide.md)：`projects.json` 模板用法与各引擎 Bridge 安装手册（Agent 驱动，服务器不读取）。
 - [搜索指南](SimpleMCPServer搜索指南.md)：`web.search` 使用原则。
 - [PowerShell JSON 坑](../MEMO-PowerShell-Json-Depth.md)：嵌套数组参数。
 

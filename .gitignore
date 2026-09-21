@@ -32,6 +32,9 @@ npm-debug.log*
 config.json
 /ab-cache
 
+# Project/engine registry (contains local machine paths — use projects.json.template)
+projects.json
+
 # MCP adapter runtime media (screenshots from external MCP servers e.g. Blender)
 /mcp-media
 /tmp
