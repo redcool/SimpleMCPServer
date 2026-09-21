@@ -128,3 +128,7 @@ C++ bridge v8 曾加入 `OnPostEngineInit` 自动执行尝试，UE 进程在无�
 ## Round 8 final static package evidence
 
 为静态物理最小闭环补充 `validation_result_v3.json`，记录 Manifest、schema、8 个 chunks、pieceExport 引用、static_physics contract 全部 pass，以及 9 transforms / 8 rigid chunks 和 Unity Collider/Rigidbody/Explosion 合同。目标核心闭环已达到可交付状态；未验证的 Transform animation、VAT、Alembic、skeletal FBX 仍在 Manifest warnings 中明确列出。
+
+## Unreal MCP 建模工具 Round 1
+
+检查结果：此前只有资产、材质、动画、Level/Actor 能力和破碎工具，没有专门的 `unreal.model.*` 建模工具族。已新增工具契约和 MCP/RPC 路由：`unreal.model.create_primitive`、`unreal.model.delete_actor`、`unreal.model.inspect`，写操作要求 `confirm=true` 或 `dryRun=true`。当前已完成注册、schema、安全门和测试；UE Python backend 的实际 primitive 创建/删除/inspect 分支仍需下一轮实现并在 UE 5.8.2 实机验证。

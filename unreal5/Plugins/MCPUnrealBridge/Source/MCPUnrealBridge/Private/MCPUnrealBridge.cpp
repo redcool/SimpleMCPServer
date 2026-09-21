@@ -1,0 +1,5 @@
+#include "Modules/ModuleManager.h"
+#include "HAL/IConsoleManager.h"
+namespace MCPModelInspection { void RunInspection(const TArray<FString>& Args); void RunActorInspection(const TArray<FString>& Args); }
+class FMCPUnrealBridgeModule : public IModuleInterface { TUniquePtr<FAutoConsoleCommand> Command; TUniquePtr<FAutoConsoleCommand> ActorCommand; public: virtual void StartupModule() override { Command=MakeUnique<FAutoConsoleCommand>(TEXT("MCP.ModelInspect"),TEXT("Inspect a StaticMesh natively and write JSON"),FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args){ MCPModelInspection::RunInspection(Args); })); ActorCommand=MakeUnique<FAutoConsoleCommand>(TEXT("MCP.ModelInspectActor"),TEXT("Inspect a level actor natively and write JSON"),FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args){ MCPModelInspection::RunActorInspection(Args); })); } virtual void ShutdownModule() override { Command.Reset(); ActorCommand.Reset(); } };
+IMPLEMENT_MODULE(FMCPUnrealBridgeModule, MCPUnrealBridge)

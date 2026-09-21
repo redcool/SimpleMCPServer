@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "unreal5-adapter-1.0",
+  "plugin": "MCPUnrealBridge",
+  "operations": ["model.inspect_native", "model.inspect_actor_native"],
+  "fallback": "ue_python",
+  "engine": "5.8.2"
+}

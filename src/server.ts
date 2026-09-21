@@ -34,6 +34,7 @@ import { isUnrealAssetTool, runUnrealAssetTool } from './unreal/unrealAssetTools
 import { runUnrealCapabilityTool } from './unreal/unrealCapabilityTools.js';
 import { runUnrealPipelineTool } from './unreal/unrealPipelineTools.js';
 import { isUnrealFractureTool, runUnrealFractureTool } from './unreal/unrealFractureTools.js';
+import { isUnrealModelTool, runUnrealModelTool } from './unreal/unrealModelTools.js';
 import { handleABRequest } from './ab.js';
 import { startAdapters, stopAdapters, isAdapterTool, isDangerAdapterTool, callAdapterTool, getAdapterHealth } from './mcpAdapter.js';
 
@@ -140,12 +141,13 @@ export async function main(): Promise<void> {
     if (isCuratedBlenderTool(toolName)) return callCuratedBlenderMcp(toolName, args);
 
 
-    if (isCuratedUnrealTool(toolName) || isUnrealAssetTool(toolName) || isUnrealFractureTool(toolName) || toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.') || toolName.startsWith('unreal.pipeline.')) {
+    if (isCuratedUnrealTool(toolName) || isUnrealAssetTool(toolName) || isUnrealFractureTool(toolName) || isUnrealModelTool(toolName) || toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.') || toolName.startsWith('unreal.pipeline.')) {
       try {
         let text: string;
         if (isCuratedUnrealTool(toolName)) text = await runCuratedUnrealTool(toolName, args);
         else if (isUnrealAssetTool(toolName)) text = await runUnrealAssetTool(toolName, args);
         else if (isUnrealFractureTool(toolName)) text = await runUnrealFractureTool(toolName, args);
+        else if (isUnrealModelTool(toolName)) text = await runUnrealModelTool(toolName, args);
         else if (toolName.startsWith('unreal.level.') || toolName.startsWith('unreal.actor.') || toolName.startsWith('unreal.material.') || toolName.startsWith('unreal.animation.')) text = await runUnrealCapabilityTool(toolName, args);
         else text = await runUnrealPipelineTool(toolName, args);
         return { content: [{ type: 'text' as const, text }] };
@@ -906,8 +908,7 @@ export async function main(): Promise<void> {
 
       // All curated Blender families share adapter selection, argument policy and JSON-RPC result shape.
       if (isCuratedBlenderTool(toolName)) return callCuratedBlenderRpc(msg.id, toolName, args);
-
-
+      if (isUnrealModelTool(toolName)) { const result = await runUnrealModelTool(toolName, args); return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: result }] } }; }
 
       // ── Bridge-registered tools ──
       const bridgeId = toolToBridge.get(toolName);

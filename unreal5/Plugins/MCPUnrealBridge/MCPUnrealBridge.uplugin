@@ -1,0 +1,12 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "MCP Unreal Bridge",
+  "Description": "Editor-only native inspection bridge for MCP",
+  "Category": "Editor",
+  "CanContainContent": false,
+  "EnabledByDefault": true,
+  "PreloadContent": false,
+  "Modules": [{"Name":"MCPUnrealBridge","Type":"Editor","LoadingPhase":"Default"}]
+}
