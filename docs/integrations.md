@@ -44,6 +44,25 @@ Server 作为 MCP Client 启动 `mcpServers` 中的 stdio 子进程；适配器�
 
 Blender Action/manifest 脚本已在本机 Blender 5.2.0 `--background --factory-startup` 隔离场景验证；这不等于当前 Add-on socket、真实用户资产、导出轴向或 Unity/Godot/Unreal 导入回归已验证。
 
-## Unreal MCP（规划）
+## Unreal MCP（已实现）
 
-四阶段骨架已完成：`unrealAdapter.ts` 负责实例选择和结果封装；`unrealTools.ts` 提供 health/capabilities；`unrealAssetTools.ts` 提供 manifest/import-status/validation/job；`unrealCapabilityTools.ts` 提供 Level/Actor/Material/Animation；`unrealPipelineTools.ts` 提供 validate/compare/snapshot/smoke-test。写操作要求 `confirm=true` 或 `dryRun=true`，所有调用沿用 `evalEnabled`、`allowedTools`、显式 adapter 选择和不自动重试语义。当前仅完成源码和静态测试，真实 Unreal MCP 端到端验证仍待接入实际 adapter。
+源码分层已完成并有两套执行路径：`src/unreal/` 是工具契约层，统一走 `unrealAdapter.ts` 的 `execute_python` dispatcher（Python fallback）；`unreal5/` 是可选 `MCPUnrealBridge` C++ 插件源码，提供原生操作与检查（需要时编译进 UE 工程）。
+
+### 工具分组（34 个）
+
+- 状态：`unreal.health` / `unreal.capabilities` / `unreal.project.info` / `unreal.level.snapshot`
+- 资产/job：`unreal.asset.manifest` / `import_status` / `validate`、`unreal.job.status` / `wait`
+- Level/Actor/材质/动画：`unreal.level.open` / `save`、`unreal.actor.spawn` / `transform`、`unreal.material.inspect`、`unreal.animation.list` / `play`
+- Model：`unreal.model.create_primitive` / `transform_actor` / `delete_actor` / `batch_create_primitives` / `assign_material` / `inspect*`
+- Pipeline：`unreal.pipeline.validate` / `compare_manifest` / `smoke_test` / `snapshot`
+- Fracture：`unreal.fracture.export_meshes` / `vat` / `alembic` / `skeletal` / `manifest` / `validate`
+
+### 接入前置条件
+
+1. `config.json` 的 `mcpServers` 配置 `unreal` 条目：`transport: "streamable-http"`、`url: http://127.0.0.1:<port>/mcp`、`toolsPrefix: "unreal"`。
+2. UE 编辑器侧启动 Unreal MCP Toolkit 并监听对应端口（`ModelContextProtocolSettings` 配置端口/路径/自启动）。
+3. 需要 C++ 原生操作时，把 `unreal5/` 的 `MCPUnrealBridge` 插件同步进 UE 工程 `Plugins/` 并用对应 UE 版本编译（参考 `unreal5/Scripts/sync-to-ue-project.ps1` 与 `build-plugin.ps1`）。
+
+### 写操作与路由限制
+
+所有写工具要求 `confirm=true` 或 `dryRun=true`；统一沿用 `evalEnabled`、`allowedTools`、显式 adapter 选择和不自动重试语义。`toolsPrefix` 指定前缀没有在线 `execute_python` 工具时会明确失败，不会静默切换到其他实例。真实破碎流水线实测记录见 [Unreal 破碎流水线](unreal-fracture-pipeline.md)。

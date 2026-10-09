@@ -6,14 +6,15 @@
 AI client --MCP Streamable HTTP/SSE--> server.ts
                                       ├─ tools.ts：合并工具清单
                                       ├─ bridgeState.ts：Bridge 状态、路由、pending 请求
-                                      ├─ mcpAdapter.ts：外部 MCP 子进程（stdio）
+                                      ├─ mcpAdapter.ts：外部 MCP 子进程/HTTP（stdio 或 streamable-http）
                                       ├─ src/blender/：Blender adapter、模板、高级、manifest、walk 和 Action 兼容层
-                                      ├─ src/unreal/：预留 Unreal MCP adapter 分层
+                                      ├─ src/unreal/：Unreal MCP adapter 分层（工具契约 + Python dispatcher 路由）
+                                      ├─ unreal5/：Unreal 源码目录（MCPUnrealBridge C++ 插件 + Python + 同步/构建脚本）
                                       └─ ab.ts：AssetBundle 文件中转
 Unity/Godot Bridge --WebSocket----------------^
 ```
 
-`src/index.ts` 只负责启动 `server.main()`；Server 的 HTTP 和 WebSocket 共用端口（默认 45678）。外部 adapter 的 stdio 是 Server 作为 MCP Client 的下游连接，不是 AI 客户端连接本 Server 的方式。
+`src/index.ts` 只负责启动 `server.main()`；Server 的 HTTP 和 WebSocket 共用端口（默认 45678）。外部 adapter 的 stdio / HTTP 是 Server 作为 MCP Client 的下游连接，不是 AI 客户端连接本 Server 的方式。
 
 ## 工具合并与路由
 
@@ -26,6 +27,8 @@ Unity/Godot Bridge --WebSocket----------------^
 | 路径 | 用途 |
 |---|---|
 | `src/` | TypeScript 运行时源码 |
+| `src/unreal/` | Unreal 适配器工具契约（health/capability/asset/pipeline/fracture/model）与统一 Python dispatcher 路由 |
+| `unreal5/` | Unreal 侧源码：`MCPUnrealBridge` C++ 插件、Python fallback、构建/同步脚本；UE 工程引用此目录 |
 | `tests/` | Node test 回归、源码静态检查和需外部服务的 E2E 脚本 |
 | `docs/` | 当前指南与专题文档；`docs/archive/` 只放历史快照 |
 | `scripts/` | 外部工具/Blender 启动辅助脚本 |

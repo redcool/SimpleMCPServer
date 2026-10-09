@@ -27,8 +27,13 @@ function pythonDispatcher(operation:string,args:Record<string,unknown>):string {
 "    if a: a.destroy_actor()\n"+
 "    out.update(ok=deleted,result={'actor':target,'deleted':deleted})\n"+
 "  elif op=='model_inspect':\n"+
-"    if op=='model_inspect_native': out.update(ok=True,result={'backend':'native_cpp','status':'bridge_contract_only','availability':'native_bridge_not_connected'})\n"+
 "    asset=unreal.load_asset(args.get('assetPath')) if args.get('assetPath') else None; out.update(ok=bool(asset),result={'path':args.get('assetPath'),'class':asset.get_class().get_name() if asset else None,'materials':None,'availability':{'materials':'ue_python_api_unavailable','lods':'ue_python_api_unavailable','collision':'ue_python_api_unavailable'},'lods':None,'collision':None})\n"+
+"  elif op=='model_inspect_native':\n"+
+"    # MCPNative (MCPUnrealBridge C++) contract — native StaticMesh inspection when the bridge is connected\n"+
+"    out.update(ok=True,result={'backend':'MCPNative','status':'bridge_contract_only','availability':'native_bridge_not_connected','naniteStatus':None,'lods':None,'materialSlotCount':None,'collisionStatus':None,'bounds':None})\n"+
+"  elif op=='model_inspect_actor_native':\n"+
+"    # MCPNative (MCPUnrealBridge C++) contract — native level-actor inspection when the bridge is connected\n"+
+"    out.update(ok=True,result={'backend':'MCPNative','status':'bridge_contract_only','availability':'native_bridge_not_connected','actor':args.get('actor'),'bounds':None,'components':None})\n"+
 "  elif op=='model_inspect_actor':\n"+
 "    target=str(args.get('actor')); a=next((x for x in unreal.EditorLevelLibrary.get_all_level_actors() if x.get_path_name()==target or x.get_actor_label()==target),None); out.update(ok=bool(a),result={'actor':target,'match':({'path':a.get_path_name(),'label':a.get_actor_label(),'class':a.get_class().get_name(),'location':[a.get_actor_location().x,a.get_actor_location().y,a.get_actor_location().z],'rotation':[a.get_actor_rotation().pitch,a.get_actor_rotation().yaw,a.get_actor_rotation().roll],'scale':[a.get_actor_scale3d().x,a.get_actor_scale3d().y,a.get_actor_scale3d().z],'bounds':({'origin':[a.get_actor_location().x,a.get_actor_location().y,a.get_actor_location().z],'extent':[a.get_actor_bounds(True)[1].x,a.get_actor_bounds(True)[1].y,a.get_actor_bounds(True)[1].z]} if hasattr(a,'get_actor_bounds') else None),'components':[c.get_class().get_name() for c in a.get_components_by_class(unreal.ActorComponent)]} if a else None)})\n"+
 "  elif op=='model_assign_material':\n"+
