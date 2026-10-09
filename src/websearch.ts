@@ -288,12 +288,15 @@ function providerList(): Provider[] {
     // Credentialed providers: skip when not configured or known unreachable
     if (name === 'serper') {
       if (!cfg.webSearch.serper.apiKey) continue;
-      if (probes.serper.ok === false) continue;
+      // A negative probe is only trusted for PROBE_COOLDOWN_MS; after it expires we
+      // re-probe instead of skipping the provider forever, so transient failures
+      // (timeouts, flaps) self-heal without a server restart.
+      if (probes.serper.ok === false && now - probes.serper.at < PROBE_COOLDOWN_MS) continue;
       probeHost('serper', SERPER_API, cfg.webSearch.providerTimeoutMs);
     } else if (name === 'google') {
       const g = cfg.webSearch.google;
       if (!g.apiKey || !g.cx) continue;
-      if (probes.google.ok === false) continue;
+      if (probes.google.ok === false && now - probes.google.at < PROBE_COOLDOWN_MS) continue;
       probeHost('google', GOOGLE_API, cfg.webSearch.providerTimeoutMs);
     }
     const coolUntil = providerCoolUntil.get(name) ?? 0;
