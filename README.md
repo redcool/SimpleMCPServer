@@ -135,5 +135,6 @@ npm test
 
 - [SimpleMcpServer](https://github.com/redcool/SimpleMCPServer)
 - [Unity Bridge](https://github.com/redcool/SimpleMCPBridge_Unity)（WebSocket）
+- [Photocraft](https://github.com/storytold/photocraft/releases)：开源 clean-room 的 Python 像素编辑工具（可打开/编辑/保存 PSD 分层文档），Agent-ready。**仅记录参考：官方仍在持续开发中，本仓库暂不直接集成或扩展。**
 
 当前文档按 2026-09-20 工作树核对；历史说明保留在 [整理前 README](docs/archive/README-before-reorganization.md)，不作为现行操作依据。
