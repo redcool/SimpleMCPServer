@@ -28,3 +28,13 @@
 ## 外部 adapter
 
 每个 `mcpServers` 条目包含 `name`、`command`，可选 `args`、`env`、`toolsPrefix`、`enabled`。子进程崩溃后会按 10/30/60/120 秒退避重连。adapter 在线只说明 MCP 子进程连通，不代表其后端应用（例如 Blender Add-on）健康；以 `/health.adapters`、工具调用和后端状态共同判断。
+
+## aiBrain 插件(SimpleAIBrain)
+
+`aiBrain.path` 指向 SimpleAIBrain 仓库；启动时 `src/pluginHost.ts` 动态加载 `<path>/dist/index.js`，校验 `contractVersion=1` 后 init。**加载失败 = 优雅降级**：路径缺失、构建产物不存在或契约不符只记一条警告，hub 照常启动、只是没有 `memory.*` 工具。
+
+- 可选 `aiBrain.dataDir` 覆写数据目录（缺省 `<path>/data`）。
+- `passiveLog`：`enabled`（缺省开）、`tools` 通配清单（缺省 blender.*/bridge.call/unreal.*/web.search）、`maxParamChars`（缺省 2048）。工具调用成败都会以 fire-and-forget 方式喂给 brain 的 `onToolEvent`；`memory.*` 自身不进被动流水；敏感参数键（token/password/secret/apikey/authorization/credential）由 brain 侧打码。
+- 身份：工具参数里的 `_brainToken` 会被 hub 摘除并交给 brain 解析为 `<studio>/<member>/<agent>` 身份；缺失或解析失败一律按访客（只读）处理。
+- brain 注册的 HTTP 路由（`/brain/health`）由 pluginHost 统一分发。
+- 停服时调用 brain `shutdown()`（flush 检索强化批）。

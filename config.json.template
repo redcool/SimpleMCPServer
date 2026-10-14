@@ -51,5 +51,10 @@
         },
         "providerTimeoutMs": 15000,
         "cooldownMs": 60000
+    },
+    "aiBrain": {
+        "path": "H:/ai_works/SimpleAIBrain",
+        "passiveLog": { "enabled": true, "tools": ["blender.*", "bridge.call", "unreal.*", "web.search"], "maxParamChars": 2048 },
+        "consolidation": { "schedule": "daily", "maxSessionsPerRun": 20 }
     }
 }

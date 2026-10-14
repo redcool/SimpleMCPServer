@@ -76,6 +76,8 @@ export interface AppConfig {
   /** External MCP servers (e.g. BlenderMCP) to proxy tools from. */
   mcpServers: MCPServerConfig[];
   webSearch: WebSearchConfig;
+  /** ai-brain 进程内插件(SimpleAIBrain M01 §5);缺省不加载 */
+  aiBrain?: { path?: string; passiveLog?: { enabled?: boolean; tools?: string[]; maxParamChars?: number }; consolidation?: { schedule?: string; maxSessionsPerRun?: number } };
 }
 
 let appConfigCache: AppConfig | null = null;

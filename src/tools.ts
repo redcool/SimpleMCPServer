@@ -1,4 +1,5 @@
 import { getCachedConfig } from './config.js';
+import { getBrain } from './pluginHost.js';
 import { bridges, toolToBridge } from './bridgeState.js';
 import { getAdapterTools, isDangerAdapterTool } from './mcpAdapter.js';
 import { getCuratedBlenderTools } from './blender/blenderTools.js';
@@ -53,6 +54,15 @@ export function getMergedTools(): Array<{ name: string; description: string; inp
     if (!isAllowed(tool.name)) continue;
     seen.add(tool.name);
     merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
+  }
+  // ai-brain plugin tools (memory.*) — M01 §3 #2:同一 allowedTools 门控
+  const brain = getBrain();
+  if (brain) {
+    for (const tool of brain.getTools()) {
+      if (!isAllowed(tool.name) || seen.has(tool.name)) continue;
+      seen.add(tool.name);
+      merged.push({ ...tool, inputSchema: tool.inputSchema ?? { type: 'object' } });
+    }
   }
   // External MCP adapter tools (e.g. blender.*) — before bridge tools so the
   // prefix namespace wins over any bridge tool with a colliding name.

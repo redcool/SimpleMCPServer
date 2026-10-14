@@ -6,6 +6,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { getBrain, isBrainTool, popBrainToken, resolveBrainIdentity, withBrainEvent, initBrain, handleBrainRoute, shutdownBrain } from './pluginHost.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { log } from './logger.js';
 import { getCachedConfig, loadAppConfig, isIpAllowed, isAuthorized, reloadConfig } from './config.js';
@@ -75,6 +76,9 @@ async function webSearchToolText(args: Record<string, unknown>): Promise<string>
 export async function main(): Promise<void> {
   const appCfg = reloadConfig();
 
+  // ── ai-brain 插件(M01 §3 #1):配置驱动加载;失败只降级 ──
+  await initBrain('0.0.12');
+
   // ── MCP Server factory: one instance per connected transport ──
   // The MCP SDK allows ONE transport per Protocol instance, so each session
   // (SSE or Streamable HTTP) gets its own Server; shared state stays module-level.
@@ -90,9 +94,21 @@ export async function main(): Promise<void> {
   });
 
   // ── Tool call: route to the bridge that registered the tool ──
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const toolName = request.params.name;
-    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+  const routeMcpTool = async (toolName: string, args: Record<string, unknown>, identity: unknown): Promise<unknown> => {
+
+    // ── ai-brain plugin tools (memory.*) — M01 §3 #3 链首 ──
+    if (isBrainTool(toolName)) {
+      const brain = getBrain();
+      if (!brain) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'ai-brain plugin not loaded' }) }], isError: true };
+      }
+      try {
+        const r = await brain.callTool(toolName, args, identity);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(r.content ?? {}) }], isError: !!r.isError };
+      } catch (err: any) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: err?.message ?? String(err) }) }], isError: true };
+      }
+    }
 
     // ── Server-side tools (bridge management) ──
     if (toolName === 'bridge.list') {
@@ -209,6 +225,15 @@ export async function main(): Promise<void> {
         isError: true,
       };
     }
+  };
+
+  // ── CallTool 外壳:计时 + 成败都触发 onToolEvent(M01 §3 #3)──
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const toolName = request.params.name;
+    const rawArgs = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const popped = popBrainToken(rawArgs);
+    const identity = resolveBrainIdentity(popped.token);
+    return (await withBrainEvent(toolName, popped.args, identity, 'mcp', () => routeMcpTool(toolName, popped.args, identity))) as unknown as never;
   });
 
   return server;
@@ -819,6 +844,15 @@ export async function main(): Promise<void> {
       return;
     }
 
+    // ── ai-brain plugin routes (/brain/*) — M01 §3 #1 RouteRegistrar 落点 ──
+    const brainRoute = handleBrainRoute(req.method, url.pathname, req);
+    if (brainRoute.handled) {
+      const out = await brainRoute.promise;
+      res.writeHead(out.status, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(out.body);
+      return;
+    }
+
     res.writeHead(404);
     res.end('Not found — use GET /sse for MCP, POST /rpc for direct JSON-RPC, GET /health for status');
   }
@@ -856,7 +890,24 @@ export async function main(): Promise<void> {
 
     if (msg.method === 'tools/call') {
       const toolName = String(msg.params?.name || '');
-      const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+      let args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+      const popped = popBrainToken(args);
+      const identity = resolveBrainIdentity(popped.token);
+      args = popped.args;
+
+      // ── ai-brain plugin tools (memory.*) — M01 §3 #4:/rpc 与 MCP 同等待遇 ──
+      if (isBrainTool(toolName)) {
+        const brain = getBrain();
+        if (!brain) return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'ai-brain plugin not loaded' } };
+        return withBrainEvent(toolName, args, identity, 'rpc', async () => {
+          try {
+            const r = await brain.callTool(toolName, args, identity);
+            return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: JSON.stringify(r.content ?? {}) }], isError: !!r.isError } };
+          } catch (err: any) {
+            return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err?.message ?? String(err) } };
+          }
+        });
+      }
 
       // ── Server-side tools ──
       if (toolName === 'bridge.list') {
@@ -887,7 +938,7 @@ export async function main(): Promise<void> {
           return { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'editor.eval is disabled (evalEnabled=false)' } };
         }
         try {
-          const result = await callBridgeById(target, method, params);
+          const result = await withBrainEvent('bridge.call', args, identity, 'rpc', () => callBridgeById(target, method, params));
           const text = typeof result === 'string' ? result : JSON.stringify(result);
           return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
         } catch (err: any) {
@@ -898,7 +949,7 @@ export async function main(): Promise<void> {
       // ── Server-side web search ──
       if (toolName === 'web.search') {
         try {
-          const text = await webSearchToolText(args);
+          const text = await withBrainEvent('web.search', args, identity, 'rpc', () => webSearchToolText(args));
           return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
         } catch (err: any) {
           const reason = err instanceof Error ? err.message : String(err);
@@ -941,6 +992,12 @@ export async function main(): Promise<void> {
 
   // ── Start external MCP adapters (BlenderMCP etc.) — non-fatal on failure ──
   await startAdapters(appCfg.mcpServers);
+
+  // ── ai-brain 优雅退出:flush 强化批、关存储(M01 §2 shutdown)──
+  const onBrainExit = () => { void shutdownBrain(); };
+  process.once('SIGINT', onBrainExit);
+  process.once('SIGTERM', onBrainExit);
+  process.once('exit', onBrainExit);
 
   // ── Start listening ──
   httpServer.on('error', (err: Error) => {
