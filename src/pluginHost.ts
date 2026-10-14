@@ -2,7 +2,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { log } from './logger.js';
-import { getCachedConfig } from './config.js';
+import { getCachedConfig, isIpAllowed } from './config.js';
 import { callLLM } from './llm.js';
 // ── ai-brain plugin host (SimpleAIBrain M01) ──
 // 进程内插件加载器:读 config.aiBrain.path → import <path>/dist/index.js →
@@ -127,10 +127,14 @@ export async function withBrainEvent<T>(toolName: string, args: Record<string, u
   }
 }
 
-/** 分发 brain 插件注册的 HTTP 路由(/brain/*);未命中返回 handled:false */
+/** 分发 brain 插件注册的 HTTP 路由(/brain/*);未命中返回 handled:false;与其它 AI 端点同一 IP 白名单 */
 export function handleBrainRoute(method: string | undefined, pathname: string, req: unknown): { handled: true; promise: Promise<{ status: number; body: string }> } | { handled: false } {
   const route = brainRoutes.find((r) => r.method === method && r.path === pathname);
   if (!route) return { handled: false };
+  const remote = (req as { socket?: { remoteAddress?: string } } | null | undefined)?.socket?.remoteAddress;
+  if (!isIpAllowed(remote)) {
+    return { handled: true, promise: Promise.resolve({ status: 403, body: JSON.stringify({ error: 'Forbidden' }) }) };
+  }
   return {
     handled: true,
     promise: (async () => {

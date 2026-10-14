@@ -53,7 +53,10 @@ test('real brain loads: 8 memory.* tools, routing works, /brain/health, onToolEv
   const denied = await brain.callTool('memory.stats', {}, null);
   assert.strictEqual(denied.isError, true);
   // /brain/health registered via RouteRegistrar
-  const route = mod.handleBrainRoute('GET', '/brain/health', {});
+  const route = mod.handleBrainRoute('GET', '/brain/health', { socket: { remoteAddress: '127.0.0.1' } });
+  const routeDenied = mod.handleBrainRoute('GET', '/brain/health', { socket: { remoteAddress: '10.9.9.9' } });
+  assert.ok(routeDenied.handled);
+  assert.strictEqual((await routeDenied.promise).status, 403, 'brain routes behind same IP whitelist');
   assert.ok(route.handled);
   const health = await route.promise;
   assert.strictEqual(health.status, 200);
