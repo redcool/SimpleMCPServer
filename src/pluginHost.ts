@@ -135,17 +135,36 @@ export function handleBrainRoute(method: string | undefined, pathname: string, r
   if (!isIpAllowed(remote)) {
     return { handled: true, promise: Promise.resolve({ status: 403, body: JSON.stringify({ error: 'Forbidden' }) }) };
   }
-  return {
-    handled: true,
-    promise: (async () => {
-      try {
-        const out = await route.handler(req);
-        return { status: 200, body: JSON.stringify(out ?? { ok: true }) };
-      } catch (e) {
-        return { status: 500, body: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) };
+  const cap = getCachedConfig().limits.maxBodyBytes;
+  const promise = (async () => {
+    try {
+      let arg: unknown = req;
+      if (method === 'POST' && req && typeof (req as { on?: unknown }).on === 'function') {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        arg = await new Promise<unknown>((resolve, reject) => {
+          (req as { on: (ev: string, cb: (c?: unknown) => void) => void }).on('data', (c?: unknown) => {
+            const buf = c as Buffer;
+            total += buf ? buf.length : 0;
+            if (total > cap) { reject(new Error('body too large')); return; }
+            chunks.push(buf);
+          });
+          (req as { on: (ev: string, cb: (c?: unknown) => void) => void }).on('end', () => {
+            const raw = Buffer.concat(chunks).toString('utf8');
+            if (!raw.trim()) { resolve(undefined); return; }
+            try { resolve(JSON.parse(raw)); } catch { resolve(undefined); }
+          });
+          (req as { on: (ev: string, cb: (e?: unknown) => void) => void }).on('error', (e?: unknown) => reject(e instanceof Error ? e : new Error(String(e))));
+        });
       }
-    })(),
-  };
+      const out = await route.handler(arg);
+      const body = typeof out === 'string' ? out : JSON.stringify(out);
+      return { status: 200, body };
+    } catch (e) {
+      return { status: 500, body: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) };
+    }
+  })();
+  return { handled: true, promise };
 }
 
 /** 停服/退出:flush 强化批、关存储;绝不抛出 */
