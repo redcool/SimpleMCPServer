@@ -15,9 +15,30 @@
 | `evalEnabled` | 任意代码执行工具门控 | 建议不需要时设为 `false` |
 | `encryption` / `encryptionKey` | Bridge 载荷 AES-256-CBC | 不是 TLS；不能替代网络层加密 |
 | `limits` | body、上传、prompt、context、并发和参数大小 | 具体默认值见模板与 `config.ts` |
-| `llm` | AI 请求转发 | API key 可由 `LLM_API_KEY` 环境变量覆盖 |
+| `llm` | AI 请求转发(渠道链:主渠道 + 最多 3 个 `fallbacks`) | 主渠道 key 可由 `LLM_API_KEY` 环境变量覆盖;回退渠道各带自己的 key(ollama 免 key) |
 | `mcpServers` | 外部 MCP 子进程 | `enabled:false` 可临时停用；重启生效 |
 | `webSearch` | `web.search` provider 顺序和超时 | 未配置凭据的 provider 会跳过 |
+
+### llm 渠道链(换你信任的 LLM)
+
+`llm` 段是**主渠道**；`llm.fallbacks`（可选，最多 3 条）是回退渠道。调用时按序尝试：主渠道失败（网络错、超时、4xx/5xx）自动换下一个，每次切换记一条 `[LLM] channel ... failed` 日志；全部失败抛聚合错误。对插件与工具完全透明。
+
+- 任何 OpenAI 兼容服务都可作渠道：填 `baseUrl`（到 /v1 为止）+ `model` + `apiKey`。
+- `provider: "ollama"`（或 baseUrl 含 ollama）走本地协议，免 key——数据不出机，信任上限。
+- `LLM_API_KEY` 环境变量只覆盖**主渠道**；回退渠道必须在配置里自带 key。
+- 启动日志打印生效链：`LLM enabled: 主模型 → fallbacks: 模型1, 模型2`。
+
+```json
+"llm": {
+  "enabled": true,
+  "baseUrl": "https://你的主渠道/v1",
+  "model": "主模型",
+  "apiKey": "主渠道key",
+  "fallbacks": [
+    { "baseUrl": "https://回退渠道/v1", "model": "回退模型", "apiKey": "回退key" }
+  ]
+}
+```
 
 ## 访问边界
 

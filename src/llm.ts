@@ -1,12 +1,23 @@
 import http from 'http';
 import https from 'https';
 import { getCachedConfig } from './config.js';
+import { log } from './logger.js';
 // ── Sanitize API keys in error messages ──
 function sanitizeLLMError(text: string): string {
   return text.replace(/sk-[A-Za-z0-9]{20,}/g, '[REDACTED]');
 }
 
 // ── LLM Integration ──
+
+/** 一个可用渠道:OpenAI 兼容(baseUrl+/chat/completions)或 ollama */
+export interface LLMEndpoint {
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  provider?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
 
 export interface AIRequestMessage {
   prompt: string;
@@ -38,42 +49,86 @@ function buildLLMMessages(req: AIRequestMessage): Array<{ role: 'system' | 'user
   return messages;
 }
 
+/** 渠道链执行:按序尝试,全部失败抛聚合错误(错误已脱敏)。测试直接注入 endpoints。 */
+export async function callLLMWithEndpoints(req: AIRequestMessage, endpoints: LLMEndpoint[]): Promise<string> {
+  if (endpoints.length === 0) return Promise.reject(new Error('LLM: no channel configured'));
+  let lastErr: Error = new Error('LLM: no attempt made');
+  for (let i = 0; i < endpoints.length; i++) {
+    const ep = endpoints[i];
+    try {
+      return await attemptLLM(ep, req);
+    } catch (e: any) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+      const hasNext = i + 1 < endpoints.length;
+      log(`[LLM] channel ${ep.model} failed: ${lastErr.message}${hasNext ? ' — trying next channel' : ''}`);
+    }
+  }
+  throw new Error(`LLM all ${endpoints.length} channels failed; last: ${lastErr.message}`);
+}
+
+/** 从 config.json 解析渠道链:主渠道(env 覆盖 key)+ fallbacks(≤3,自带 key) */
 export function callLLM(req: AIRequestMessage): Promise<string> {
-  const serverCfg = getCachedConfig();
-  const llmCfg = serverCfg.llm;
+  const llmCfg = getCachedConfig().llm;
 
   if (!llmCfg.enabled) {
     return Promise.reject(new Error('LLM is disabled on server (set llm.enabled=true in config.json)'));
   }
 
-  const apiKey = process.env.LLM_API_KEY || llmCfg.apiKey;
-  if (!apiKey) {
+  const primary: LLMEndpoint = {
+    baseUrl: llmCfg.baseUrl,
+    model: llmCfg.model,
+    apiKey: process.env.LLM_API_KEY || llmCfg.apiKey,
+    provider: llmCfg.provider,
+    temperature: llmCfg.temperature,
+    maxTokens: llmCfg.maxTokens,
+  };
+  const isLocal = (ep: LLMEndpoint): boolean => ep.provider === 'ollama' || ep.baseUrl.includes('ollama');
+  const fallbacks: LLMEndpoint[] = (llmCfg.fallbacks ?? []).slice(0, 3).map((fb) => ({
+    baseUrl: fb.baseUrl,
+    model: fb.model,
+    apiKey: fb.apiKey,
+    provider: fb.provider,
+    temperature: fb.temperature,
+    maxTokens: fb.maxTokens,
+  }));
+  const validFallbacks = fallbacks.filter((fb) => isLocal(fb) || (fb.apiKey ?? '').length > 0);
+  if (!primary.apiKey && validFallbacks.length === 0) {
+    return Promise.reject(new Error('LLM API key not configured. Set LLM_API_KEY env var or llm.apiKey in config.json'));
+  }
+
+  // 主渠道缺 key 时仍入链:attemptLLM 会快速失败并落到回退(日志可见)
+  return callLLMWithEndpoints(req, [primary, ...validFallbacks]);
+}
+
+function attemptLLM(ep: LLMEndpoint, req: AIRequestMessage): Promise<string> {
+  const apiKey = ep.apiKey ?? '';
+  if (!apiKey && !(ep.provider === 'ollama' || ep.baseUrl.includes('ollama'))) {
     return Promise.reject(new Error('LLM API key not configured. Set LLM_API_KEY env var or llm.apiKey in config.json'));
   }
 
   const messages = buildLLMMessages(req);
 
   // Build OpenAI-compatible request body
-  const isOllama = llmCfg.provider === 'ollama' || llmCfg.baseUrl.includes('ollama');
+  const isOllama = ep.provider === 'ollama' || ep.baseUrl.includes('ollama');
 
   let bodyStr: string;
   if (isOllama) {
     bodyStr = JSON.stringify({
-      model: llmCfg.model,
+      model: ep.model,
       prompt: req.prompt,
       context: req.context || {},
       options: {
-        temperature: llmCfg.temperature,
-        num_predict: llmCfg.maxTokens,
+        temperature: ep.temperature ?? 0.7,
+        num_predict: ep.maxTokens ?? 1024,
       },
       stream: false,
     });
   } else {
     bodyStr = JSON.stringify({
-      model: llmCfg.model,
+      model: ep.model,
       messages,
-      temperature: llmCfg.temperature,
-      max_tokens: llmCfg.maxTokens,
+      temperature: ep.temperature ?? 0.7,
+      max_tokens: ep.maxTokens ?? 1024,
     });
   }
 
@@ -100,7 +155,7 @@ export function callLLM(req: AIRequestMessage): Promise<string> {
       settle(() => reject(new Error('LLM request timed out after 60s')));
     }, 60_000);
 
-    const url = new URL(`${llmCfg.baseUrl}/chat/completions`);
+    const url = new URL(`${ep.baseUrl}/chat/completions`);
     const httpModule = url.protocol === 'https:' ? https : http;
 
     const options: http.RequestOptions = {

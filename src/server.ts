@@ -1024,7 +1024,7 @@ export async function main(): Promise<void> {
     if (!llmCfg.enabled) {
       log(`[Server] LLM: disabled (set llm.enabled=true in config.json)`);
     } else if (llmCfg.apiKey) {
-      log(`[Server] LLM enabled: ${llmCfg.provider} / ${llmCfg.model}`);
+      log(`[Server] LLM enabled: ${llmCfg.provider} / ${llmCfg.model}${Array.isArray(llmCfg.fallbacks) && llmCfg.fallbacks.length ? ' → fallbacks: ' + llmCfg.fallbacks.map((f) => f.model).join(', ') : ''}`);
     } else {
       log(`[Server] LLM enabled but not configured (set llm.apiKey in config.json or LLM_API_KEY env var)`);
     }

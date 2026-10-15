@@ -2,9 +2,11 @@
 
 > 开始任务前阅读本文件。凡涉及功能、协议、工具、配置、测试或运行方式的变更，完成后必须更新本文件，并修改“最后更新”。
 >
-> 最后更新：2026-09-20（README 同步 4 引擎控制能力；Unreal native inspect 契约补全；Unreal MCP model 检查、批量 Primitive、材质赋值与 UE 5.8.2 验证完成）
+> 最后更新：2026-10-15（llm 渠道回退链：llm.fallbacks ≤3 按序回退，渠道失败日志，config 深合并净化；3 测试；configuration.md 同步）
 
 ## 项目定位
+
+> 2026-10-15：`callLLM` 支持渠道回退链（`llm.fallbacks`，≤3，按序尝试，对插件透明）。换信任的 LLM = 改 `config.json` 的 `llm` 段，见 docs/configuration.md「llm 渠道链」。
 
 Node.js + TypeScript MCP Server：向 AI Agent 提供 MCP 工具；通过 WebSocket 转发 Unity/Godot Bridge；作为 MCP Client 接入外部 MCP Server（当前重点 BlenderMCP）；提供 SSE、Streamable HTTP、直接 JSON-RPC、认证/IP 白名单、资源限制、加密和危险工具门控。
 

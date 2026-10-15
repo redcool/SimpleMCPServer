@@ -8,6 +8,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(__dirname, '..', 'config.json');
 const CONFIG_TEMPLATE_PATH = join(__dirname, '..', 'config.json.template');
 
+export interface LLMEndpointConfig {
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  provider?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
 export interface LLMConfig {
   enabled: boolean;
   provider: string;
@@ -16,6 +25,8 @@ export interface LLMConfig {
   model: string;
   temperature: number;
   maxTokens: number;
+  /** 回退渠道(≤3,按序尝试;各带自己的 apiKey;ollama 可免 key) */
+  fallbacks?: LLMEndpointConfig[];
 }
 
 /** One external MCP server this server connects to as an MCP *client* (plan C).
@@ -143,6 +154,8 @@ export function loadAppConfig(): AppConfig {
     const cfg: AppConfig = {
       ...defaults,
       ...raw,
+      // Deep-merge llm (fallbacks 净化在下方;浅展开会丢缺省字段)
+      llm: { ...defaults.llm, ...(raw.llm ?? {}) },
       // Deep-merge webSearch (shallow spread would drop sub-objects like google/serper)
       limits: { ...defaults.limits, ...(raw.limits ?? {}) },
       allowedTools: Array.isArray(raw.allowedTools) ? raw.allowedTools.filter((x: unknown) => typeof x === 'string' && x.length <= 200) : [],
@@ -154,6 +167,16 @@ export function loadAppConfig(): AppConfig {
         serper: { ...defaults.webSearch.serper, ...((raw.webSearch ?? {}).serper ?? {}) },
       },
     };
+    // Sanitize llm.fallbacks: ≤3,必须是带非空 baseUrl/model 的对象
+    if (Array.isArray(cfg.llm.fallbacks)) {
+      cfg.llm.fallbacks = cfg.llm.fallbacks
+        .filter((fb: unknown) => !!fb && typeof fb === 'object')
+        .map((fb: { baseUrl?: unknown; model?: unknown }) => fb as { baseUrl?: string; model?: string })
+        .filter((fb) => typeof fb.baseUrl === 'string' && fb.baseUrl.length > 0 && typeof fb.model === 'string' && fb.model.length > 0)
+        .slice(0, 3) as LLMConfig['fallbacks'];
+    } else {
+      delete cfg.llm.fallbacks;
+    }
     // Missing/absent/empty allowedIps → loopback-only default
     if (!Array.isArray(cfg.allowedIps) || cfg.allowedIps.length === 0) {
       cfg.allowedIps = [...DEFAULT_ALLOWED_IPS];
