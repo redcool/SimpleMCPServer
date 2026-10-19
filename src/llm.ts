@@ -167,15 +167,19 @@ function attemptLLM(ep: LLMEndpoint, req: AIRequestMessage): Promise<string> {
     };
 
     const httpreq = httpModule.request(options, (res: http.IncomingMessage) => {
-      let data = '';
+      const chunks: Buffer[] = [];
+      let bytes = 0;
       res.on('data', (chunk: Buffer) => {
-        data += chunk;
-        if (data.length > MAX_LLM_RESPONSE) {
+        chunks.push(chunk);
+        bytes += chunk.length;
+        if (bytes > MAX_LLM_RESPONSE) {
           settle(() => reject(new Error('LLM response too large (limit 10MB)')));
           res.destroy();
         }
       });
       res.on('end', () => {
+        // 字节累积,end 时一次性解码:跨 TCP 分块的多字节字符不再腰斩成 U+FFFD
+        const data = Buffer.concat(chunks).toString('utf8');
         settle(() => {
           try {
             const parsed = JSON.parse(data);
