@@ -28,6 +28,11 @@ npm-debug.log*
 /server.out
 /server-run.log
 
+# Memory system credentials (ai-brain: local identity token — never commit)
+data/
+member-credential.json
+.brain.json
+
 # Config (contains API keys — use config.json.template instead)
 config.json
 /ab-cache
