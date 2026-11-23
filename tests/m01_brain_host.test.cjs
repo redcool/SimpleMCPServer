@@ -34,7 +34,7 @@ test('contractVersion=99 -> rejected with clear error', async () => {
   await fsp.rm(dir, { recursive: true, force: true });
 });
 
-test('real brain loads: 8 memory.* tools, routing works, /brain/health, onToolEvent fires (rpc)', async (t) => {
+test('real brain loads: >=8 memory.* tools, routing works, /brain/health, onToolEvent fires (rpc)', async (t) => {
   const mod = await import('../dist/pluginHost.js');
   const dataDir = await tmpdir('braindata');
   t.after(async () => { await mod.shutdownBrain(); await fsp.rm(dataDir, { recursive: true, force: true }); });
@@ -43,7 +43,7 @@ test('real brain loads: 8 memory.* tools, routing works, /brain/health, onToolEv
   assert.ok(brain, 'brain loaded from repo dist');
   assert.strictEqual(brain.contractVersion, 1);
   const tools = brain.getTools();
-  assert.strictEqual(tools.length, 8);
+  assert.ok(tools.length >= 8, 'plugin contract floor 8; count red line lives in the brain plugin (0.0.17.0: 10)');
   for (const td of tools) assert.ok(td.name.startsWith('memory.'));
   // tools/call routable: whoami as guest (null identity) per M08 section 2
   const r = await brain.callTool('memory.whoami', {}, null);
