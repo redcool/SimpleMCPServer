@@ -2,7 +2,7 @@
 
 > 开始任务前阅读本文件。凡涉及功能、协议、工具、配置、测试或运行方式的变更，完成后必须更新本文件，并修改“最后更新”。
 >
-> 最后更新：2026-10-22（文档改为相对路径：组件与 hub 同级（`../SimpleMCPBridge`、`../SimpleMCPBridge_Godot`、`../SimpleAIBrain`、本仓库 `unreal5/`）；AGENTS/README 组件清单补齐；记忆系统接入：身份 s1/local/simplemcpserver，`.brain.json` 已 gitignore；此前 2026-10-15 llm 渠道回退链）
+> 最后更新：2026-10-22（文档改为相对路径：组件与 hub 同级（`../SimpleMCPBridge`、`../SimpleMCPBridge_Godot`、`../SimpleAIBrain`、本仓库 `unreal5/`）；AGENTS/README 组件清单补齐；适配 `docsRules/` 纪律目录重组并修复 6 处断链、登记两份纪律文档；记忆系统接入：身份 s1/local/simplemcpserver，`.brain.json` 已 gitignore；此前 2026-10-15 llm 渠道回退链）
 
 ## 项目定位
 
@@ -82,6 +82,8 @@ npm start
 | `docs/configuration.md` | 配置、安全与限制 |
 | `docs/integrations.md` | Unity/Godot/Blender 接入边界 |
 | `docs/development.md` | 构建、测试与已知限制 |
+| `docsRules/Agent工作纪律.md` | 工作纪律：版本号与 z 升版判定、.trash/tmp、写作与沟通纪律 |
+| `docsRules/Agent代码工程纪律.md` | 代码工程纪律：架构/KISS、先读后写、最小修改、测试铁律、安全红线、交付格式 |
 
 ## 目录分层
 ## 记忆系统使用(由 enroll.mjs 生成,0.0.16.13)

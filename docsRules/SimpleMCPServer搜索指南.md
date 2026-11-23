@@ -237,7 +237,7 @@ Serper/Google → Bing → DDG → 档案馆/大学/博物馆原文
 
 - 默认 provider 顺序为 `serper → google → bing → ddg-html → ddg-lite`，可由 `webSearch.order` 覆盖；缺凭据、不可达或冷却中的 provider 会跳过。搜索在首个返回非空结果的 provider 处结束，不会自动聚合多引擎结果。
 - PowerShell 示例启用 `authToken` 时还必须发送 `Authorization: Bearer <token>`；token 不应写入文档。
-- 服务配置、集成和开发流程分别见 [`configuration.md`](configuration.md)、[`integrations.md`](integrations.md)、[`development.md`](development.md)。
+- 服务配置、集成和开发流程分别见 [`configuration.md`](../docs/configuration.md)、[`integrations.md`](../docs/integrations.md)、[`development.md`](../docs/development.md)。
 
 ### 7. 最终原则
 

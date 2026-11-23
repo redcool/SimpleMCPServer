@@ -120,7 +120,7 @@ http://127.0.0.1:45678/mcp-stream
 - [配置与安全](docs/configuration.md)：配置来源、权限边界和限制。
 - [后端接入](docs/integrations.md)：Unity/Godot、Blender、Unreal 与多实例前置条件。
 - [开发与验证](docs/development.md)：命令、测试范围、已知问题和排查。
-- [Blender 工具](docs/blender-mcp-template-tools.md)、[项目与 Bridge 安装](docs/projects-bridge-guide.md)、[Unreal 破碎流水线](docs/unreal-fracture-pipeline.md)、[搜索指南](docs/SimpleMCPServer搜索指南.md)。
+- [Blender 工具](docs/blender-mcp-template-tools.md)、[项目与 Bridge 安装](docs/projects-bridge-guide.md)、[Unreal 破碎流水线](docs/unreal-fracture-pipeline.md)、[搜索指南](docsRules/SimpleMCPServer搜索指南.md)。
 - [Agent 协作规则](AGENTS.md)：改动前必读；[会话历史](session_memory.md) 不代表当前运行状态。
 
 ## 验证范围
