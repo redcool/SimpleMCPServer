@@ -131,10 +131,25 @@ npm test
 
 这会构建 TypeScript 并运行 `tests/*.test.cjs`。现有测试包含模块回归、Blender 源码静态检查与 Unreal 适配器路由/门控回归，**不等于 Unity/Godot/Blender/Unreal 的端到端验证**。外部环境测试须单独准备，见开发指南。
 
-## 相关仓库
+## 组件（同级目录）
+
+本仓库是 hub。其余配套组件与本仓库**同级**（同一个父目录），按相对路径定位。拿到本仓库即可按下表找到全部组件：
+
+| 组件 | 位置 | 作用 |
+|---|---|---|
+| SimpleMcpServer | 本仓库 | hub：MCP 网关、Bridge 转发、adapter 宿主、`/rpc`、`/health`、`/ab` |
+| SimpleMCPBridge | `../SimpleMCPBridge` | Unity Bridge（UPM 包），WebSocket 注册工具到 hub |
+| SimpleMCPBridge_Godot | `../SimpleMCPBridge_Godot` | Godot Bridge（addons 插件），WebSocket 注册工具到 hub |
+| SimpleAIBrain | `../SimpleAIBrain` | 记忆系统（ai-brain 插件），提供 `memory.*` 工具；凭据为 `.brain.json` |
+| unreal5 | 本仓库 `unreal5/` | Unreal C++ 插件源码（MCPUnrealBridge）+ Python 回退 + 构建/同步脚本 |
+| Blender MCP | 外部依赖 | `blender-mcp` 进程 + Blender Add-on，非本仓库组件 |
+
+接入步骤见 [后端接入](docs/integrations.md)；Bridge 安装见 [项目与 Bridge 安装](docs/projects-bridge-guide.md)；各组件之间只用相对路径引用，不写死本机绝对路径。
+
+## 相关仓库（远程记录）
 
 - [SimpleMcpServer](https://github.com/redcool/SimpleMCPServer)
-- [Unity Bridge](https://github.com/redcool/SimpleMCPBridge_Unity)（WebSocket）
+- [SimpleMCPBridge_Unity](https://github.com/redcool/SimpleMCPBridge_Unity)（本地目录名 `SimpleMCPBridge`，WebSocket）
 - [Photocraft](https://github.com/storytold/photocraft/releases)：开源 clean-room 的 Python 像素编辑工具（可打开/编辑/保存 PSD 分层文档），Agent-ready。**仅记录参考：官方仍在持续开发中，本仓库暂不直接集成或扩展。**
 
-当前文档按 2026-09-20 工作树核对；历史说明保留在 [整理前 README](docs/archive/README-before-reorganization.md)，不作为现行操作依据。
+当前文档按 2026-10-22 工作树核对；历史说明保留在 [整理前 README](docs/archive/README-before-reorganization.md)，不作为现行操作依据。

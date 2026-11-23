@@ -66,3 +66,12 @@ Blender Action/manifest 脚本已在本机 Blender 5.2.0 `--background --factory
 ### 写操作与路由限制
 
 所有写工具要求 `confirm=true` 或 `dryRun=true`；统一沿用 `evalEnabled`、`allowedTools`、显式 adapter 选择和不自动重试语义。`toolsPrefix` 指定前缀没有在线 `execute_python` 工具时会明确失败，不会静默切换到其他实例。真实破碎流水线实测记录见 [Unreal 破碎流水线](unreal-fracture-pipeline.md)。
+
+## SimpleAIBrain（记忆系统）
+
+位置：`../SimpleAIBrain`（与 hub 同级，非本仓库代码）。hub 经 `src/pluginHost.ts` 动态加载 `<aiBrain.path>/dist/index.js`，对外提供 `memory.*` 工具（save/search/context/submit_session/stats/whoami/edit）。
+
+- 身份与凭据：工作区登记后生成 `.brain.json`（studio / member / agent_label / token）。调用 `memory.*` 时把 token 作为**工具参数 `_brainToken`** 传入，不是 HTTP Bearer 头。
+- 加载失败 = 优雅降级：路径缺失、构建产物不存在或契约不符只记一条警告，hub 照常启动、只是没有 `memory.*`。配置见 [配置与安全](configuration.md)「aiBrain 插件」。
+- 记忆归属按身份隔离：`agent` 作用域只有同一身份可见，跨工作区内容不要共用身份存。
+- 凭据与数据已在 `.gitignore` 排除：`.brain.json`、`data/`、`member-credential.json`。

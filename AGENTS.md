@@ -2,7 +2,7 @@
 
 > 开始任务前阅读本文件。凡涉及功能、协议、工具、配置、测试或运行方式的变更，完成后必须更新本文件，并修改“最后更新”。
 >
-> 最后更新：2026-10-22（记忆系统接入：工作区登记身份 s1/local/simplemcpserver，`.brain.json` 凭据已加入 gitignore，本文件末尾追加"记忆系统使用"章节；此前 2026-10-15 llm 渠道回退链）
+> 最后更新：2026-10-22（文档改为相对路径：组件与 hub 同级（`../SimpleMCPBridge`、`../SimpleMCPBridge_Godot`、`../SimpleAIBrain`、本仓库 `unreal5/`）；AGENTS/README 组件清单补齐；记忆系统接入：身份 s1/local/simplemcpserver，`.brain.json` 已 gitignore；此前 2026-10-15 llm 渠道回退链）
 
 ## 项目定位
 
@@ -12,16 +12,22 @@ Node.js + TypeScript MCP Server：向 AI Agent 提供 MCP 工具；通过 WebSoc
 
 本仓库不包含 Unity/Godot Bridge、Blender Add-on 或 Unreal MCP Server 本体。
 
-## 环境与路径
+## 组件与路径约定
 
-- Server：H:\ai_works\SimpleMcpServer
-- Unity Bridge：H:\ai_works\SimpleMCPBridge
-- Godot Bridge：H:\ai_works\SimpleMcpBridge_Godot
-- 游戏工程：H:\Works\FeiTuTeamPrj
-- Blender：H:\Program Files\blender-5.2.0-windows-x64
-- Blender：5.2.0 LTS；Unity 实测 2022.3.62f2；Godot 实测 4.7 stable mono
-- Blender MCP：blender-mcp@1.9.1
-- Server 端口：45678；Blender 默认端口：9876，第二实例通常 9877
+所有配套组件与本仓库**同级**（同一个父目录）。文档只用相对路径，不写死本机绝对路径。
+
+| 组件 | 相对位置 | 作用 |
+|---|---|---|
+| SimpleMcpServer（本仓库） | `.` | hub：HTTP/WebSocket/MCP/RPC，端口 45678 |
+| SimpleMCPBridge | `../SimpleMCPBridge` | Unity Bridge，UPM 包，WebSocket 注册工具 |
+| SimpleMCPBridge_Godot | `../SimpleMCPBridge_Godot` | Godot Bridge，addons 插件，WebSocket 注册工具 |
+| SimpleAIBrain | `../SimpleAIBrain` | 记忆系统（ai-brain 插件），提供 `memory.*`；凭据 `.brain.json` |
+| unreal5 | 本仓库 `unreal5/` | Unreal C++ 插件源码（MCPUnrealBridge）+ Python + 同步脚本 |
+| Blender MCP | 外部依赖 | `blender-mcp` 进程 + Blender Add-on，非本仓库组件 |
+
+- 版本实测：Blender 5.2 LTS；Unity 2022.3.62f2；Godot 4.7 stable mono；blender-mcp@1.9.1。
+- 端口：Server 45678；Blender Add-on 默认 9876，第二实例通常 9877。
+- 引擎安装目录、游戏工程目录属本机环境，不写默认值；需要时向用户确认。
 
 ## 构建、测试、入口
 

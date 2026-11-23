@@ -5,7 +5,7 @@
 - [项目入口](../README.md)：安装、启动、MCP 客户端连接。
 - [架构与目录](architecture.md)：Server、Bridge、adapter 和工具层边界。
 - [配置与安全](configuration.md)：配置字段、访问控制、危险工具与资源限制。
-- [后端接入](integrations.md)：Unity/Godot Bridge、BlenderMCP、Unreal MCP 与多实例。
+- [后端接入](integrations.md)：Unity/Godot Bridge、BlenderMCP、Unreal MCP、SimpleAIBrain 记忆系统与多实例。
 - [开发与验证](development.md)：构建、测试、E2E 前置条件与已知限制。
 - [Blender 模板工具](blender-mcp-template-tools.md)：工具参数和工作流；状态标记以源码和实际测试为准。
 - [Unreal 破碎流水线](unreal-fracture-pipeline.md)：UE 5.8.2 真破碎导出与跨引擎静态物理闭环实测记录。
